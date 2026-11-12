@@ -6,13 +6,19 @@ Nothing is downloaded until you say so. The same folder works on Windows and mac
 
 This is **v1.3**.
 
-## Screenshot
+## Screenshots
 
-A screenshot of the app will live here once one is added. If you have a capture, save it as `docs/screenshot.png` and it can be shown like this:
+![The Hugging Face category picker](docs/screenshots/categories.png)
 
-```markdown
-![ModelRepoFinder](docs/screenshot.png)
-```
+The Hugging Face category picker.
+
+![The model suggestions list](docs/screenshots/suggestions.png)
+
+The model suggestions list.
+
+![The GitHub tab](docs/screenshots/github-tab.png)
+
+The GitHub tab.
 
 ## Requirements
 
