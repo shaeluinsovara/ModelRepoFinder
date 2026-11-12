@@ -1,0 +1,29 @@
+# Local toolkit created on first run
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Downloads and local state (never commit these)
+incoming/
+retired/
+report.md
+
+# Optional tokens — stored only on this computer
+.hf_token
+.github_token
+
+# OS and editor
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+*.swp

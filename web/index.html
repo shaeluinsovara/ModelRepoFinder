@@ -1,0 +1,1347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ModelRepoFinder</title>
+  <style>
+    :root {
+      --parchment: #f7f1e8;
+      --ink: #2c2430;
+      --muted: #6a5d6e;
+      --plum: #6b3a6d;
+      --plum-dark: #4e2a50;
+      --gold: #c4a35a;
+      --card: #fffcf7;
+      --line: #e4d8c8;
+      --ok: #2f6f4e;
+      --warn: #8a4b12;
+      --err: #8b2e2e;
+      --shadow: 0 8px 24px rgba(44, 36, 48, 0.08);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--parchment); color: var(--ink); }
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+    header {
+      padding: 2rem 1.5rem 1rem;
+      border-bottom: 2px solid var(--gold);
+      background: linear-gradient(180deg, #efe4d4 0%, var(--parchment) 100%);
+    }
+    h1 {
+      font-family: Palatino, "Palatino Linotype", Georgia, serif;
+      font-weight: 600;
+      font-size: 2rem;
+      margin: 0 0 0.35rem;
+      color: var(--plum-dark);
+    }
+    .ver { font-size: 0.95rem; color: var(--muted); font-weight: 500; }
+    .tagline { color: var(--muted); margin: 0; max-width: 44rem; }
+    .tabs { display: flex; gap: 0.4rem; margin-top: 1.1rem; }
+    .tabs button {
+      border-radius: 12px 12px 0 0;
+      border: 1px solid var(--line);
+      border-bottom: none;
+      background: #efe6d8;
+      color: var(--plum-dark);
+      padding: 0.55rem 1.1rem;
+    }
+    .tabs button[aria-selected="true"] {
+      background: var(--card);
+      color: var(--plum-dark);
+      box-shadow: var(--shadow);
+    }
+    main { max-width: 1040px; margin: 0 auto; padding: 1.25rem 1.25rem 4rem; }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 1.1rem 1.2rem;
+      box-shadow: var(--shadow);
+      margin-bottom: 1.1rem;
+    }
+    label { display: block; font-weight: 600; font-size: 0.92rem; margin-bottom: 0.3rem; }
+    .hint { color: var(--muted); font-size: 0.88rem; margin: 0.25rem 0 0; }
+    select, input[type="text"], input[type="password"], input[type="number"] {
+      width: 100%;
+      padding: 0.6rem 0.7rem;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font: inherit;
+      background: #fff;
+      color: var(--ink);
+    }
+    .row { display: grid; gap: 0.9rem; }
+    @media (min-width: 720px) {
+      .row.two { grid-template-columns: 1fr 1.4fr; }
+      .row.three { grid-template-columns: 1.2fr 2fr 0.7fr; }
+    }
+    button {
+      font: inherit;
+      font-weight: 600;
+      border: none;
+      border-radius: 999px;
+      padding: 0.65rem 1.15rem;
+      cursor: pointer;
+      background: var(--plum);
+      color: #fff;
+    }
+    button:hover { background: var(--plum-dark); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    button.secondary {
+      background: transparent;
+      color: var(--plum-dark);
+      border: 1.5px solid var(--plum);
+    }
+    button.secondary:hover { background: #f3eaf3; }
+    button.danger {
+      background: transparent;
+      color: var(--err);
+      border: 1.5px solid #d9b3b3;
+      padding: 0.3rem 0.75rem;
+      font-size: 0.85rem;
+    }
+    button.linkish {
+      background: none;
+      color: var(--plum);
+      padding: 0;
+      border-radius: 0;
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; align-items: center; }
+    .banner {
+      padding: 0.75rem 0.9rem;
+      border-radius: 12px;
+      margin: 0 0 1rem;
+      background: #efe6c9;
+      color: var(--warn);
+    }
+    .banner.ok { background: #e4f0e8; color: var(--ok); }
+    .banner.err { background: #f6e4e4; color: var(--err); }
+    .banner.info { background: #eee6f0; color: var(--plum-dark); }
+    .cats {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 0.55rem;
+      margin-top: 0.5rem;
+    }
+    .cat {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 0.45rem 0.55rem;
+      align-items: start;
+      padding: 0.55rem 0.65rem;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+    .cat .name { font-weight: 650; }
+    .cat .desc { font-size: 0.8rem; color: var(--muted); margin: 0.1rem 0 0; }
+    .keep { width: 3.4rem; padding: 0.25rem 0.3rem; font-size: 0.85rem; }
+    .tag-block h2 {
+      font-family: Palatino, Georgia, serif;
+      font-size: 1.25rem;
+      margin: 0 0 0.35rem;
+      color: var(--plum-dark);
+    }
+    .model, .repo {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.7rem 0.85rem;
+      padding: 0.85rem 0;
+      border-top: 1px solid var(--line);
+    }
+    .model:first-of-type, .repo:first-of-type { border-top: none; }
+    h3 { margin: 0; font-size: 1.02rem; }
+    a { color: var(--plum); }
+    .meta { color: var(--muted); font-size: 0.9rem; margin: 0.2rem 0 0; }
+    .badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      padding: 0.1rem 0.45rem;
+      border-radius: 999px;
+      background: #efe6c9;
+      color: #6a4a16;
+      margin-left: 0.35rem;
+      vertical-align: middle;
+    }
+    .badge.mlx, .badge.coreml { background: #e4eaf6; color: #2a3d6e; }
+    .badge.allowed { background: #e4f0e8; color: var(--ok); }
+    .bar {
+      height: 10px;
+      background: #efe6d8;
+      border-radius: 99px;
+      overflow: hidden;
+      margin: 0.5rem 0;
+    }
+    .bar > span {
+      display: block;
+      height: 100%;
+      background: var(--plum);
+      width: 0%;
+      transition: width 0.2s;
+    }
+    .log {
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 0.8rem;
+      background: #2c2430;
+      color: #f7f1e8;
+      border-radius: 10px;
+      padding: 0.7rem 0.8rem;
+      max-height: 10rem;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+    .installed { list-style: none; padding: 0; margin: 0; }
+    .installed li {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      align-items: center;
+      padding: 0.55rem 0;
+      border-top: 1px solid var(--line);
+    }
+    .path { font-size: 0.85rem; color: var(--muted); word-break: break-all; }
+    footer { color: var(--muted); font-size: 0.85rem; margin-top: 1.5rem; }
+    input[type="checkbox"] { width: 1.15rem; height: 1.15rem; margin-top: 0.2rem; accent-color: var(--plum); }
+    .hidden { display: none !important; }
+    .custom-form { margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px dashed var(--line); }
+
+    .file-list {
+      max-height: 14rem;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      margin: 0.6rem 0;
+      background: #fff;
+    }
+    .file-list table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    .file-list th, .file-list td { text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--line); }
+    .file-list th { color: var(--muted); font-weight: 600; }
+    .pick-list { list-style: none; padding: 0; margin: 0.4rem 0 0; }
+    .pick-list li { padding: 0.25rem 0; }
+    input[type="radio"] { accent-color: var(--plum); margin-right: 0.4rem; }
+    #paste-result { margin-top: 0.9rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ModelRepoFinder <span class="ver" id="version-label">v1.3</span></h1>
+    <p class="tagline">Find open-source models and GitHub projects that fit your house, then download only the ones you approve. Nothing leaves this computer except requests to Hugging Face or GitHub.</p>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tab-hf" aria-selected="true" aria-controls="pane-hf">Hugging Face models</button>
+      <button type="button" role="tab" id="tab-gh" aria-selected="false" aria-controls="pane-gh">GitHub repos</button>
+    </div>
+  </header>
+  <main>
+    <div id="status-banner" class="banner info">This is a preview mode. Nothing downloads until you click Approve &amp; download.</div>
+
+    <section class="panel">
+      <div class="row two">
+        <div>
+          <label for="machine">Which computer is this for?</label>
+          <select id="machine"></select>
+          <p class="hint" id="machine-hint"></p>
+        </div>
+        <div>
+          <label for="base-folder">Save files in this folder</label>
+          <input id="base-folder" type="text" placeholder="Leave blank to use the folder next to this app" spellcheck="false">
+          <p class="hint">You can paste a path now, or later point this at a shared folder or NAS. Click Save folder after you change it. Category choices are remembered per computer, so each machine can search a different set.</p>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" class="secondary" id="save-folder">Save folder</button>
+      </div>
+    </section>
+
+    <section class="panel" id="progress-panel" hidden>
+      <strong id="progress-label">Working…</strong>
+      <div class="bar" aria-hidden="true"><span id="progress-bar"></span></div>
+      <p class="hint" id="progress-text"></p>
+      <pre class="log" id="progress-log" hidden></pre>
+      <p style="margin:0.7rem 0 0;">
+        <button type="button" class="secondary hidden" id="retry-failed">Retry failed</button>
+      </p>
+    </section>
+
+    <div id="pane-hf" role="tabpanel">
+      <section class="panel">
+        <label for="hf-paste">Paste any Hugging Face link</label>
+        <p class="hint">A model page, an org/name like openai/whisper-tiny, or a /tree/main or /blob/… link all work. Check first — nothing downloads until you approve it.</p>
+        <div class="row two" style="margin-top:0.5rem;">
+          <div>
+            <input id="hf-paste" type="text" placeholder="https://huggingface.co/org/name" spellcheck="false" autocomplete="off">
+          </div>
+          <div style="display:flex;align-items:flex-end;">
+            <button type="button" id="hf-check">Check</button>
+          </div>
+        </div>
+        <div id="paste-result" class="hidden"></div>
+        <div style="margin-top:1rem;">
+          <label for="hf-token">Optional Hugging Face token</label>
+          <input id="hf-token" type="password" placeholder="Only needed for gated models" autocomplete="off">
+          <p class="hint" id="hf-token-hint">Some models are gated: you must open the model page in a browser, accept the license, and paste an access token here. It is saved only on this computer, in a hidden local file, and is sent only to Hugging Face.</p>
+        </div>
+        <div class="actions">
+          <button type="button" class="secondary" id="save-hf-token">Save token</button>
+        </div>
+      </section>
+      <section class="panel">
+        <label>Which kinds of models should we look for?</label>
+        <p class="hint">Tick only what you want this computer to search. These choices are saved for this computer. Unticked categories are skipped, which also makes the search faster.</p>
+        <div class="cats" id="hf-cats"></div>
+        <div class="actions">
+          <button type="button" class="secondary" id="hf-all">Select all</button>
+          <button type="button" class="secondary" id="hf-none">Select none</button>
+          <button type="button" class="linkish" id="toggle-hf-custom">+ Add your own category</button>
+        </div>
+        <div class="custom-form hidden" id="hf-custom">
+          <div class="row three">
+            <div>
+              <label for="hf-custom-name">Name</label>
+              <input id="hf-custom-name" type="text" placeholder="e.g. Storytelling">
+            </div>
+            <div>
+              <label for="hf-custom-search">Search words</label>
+              <input id="hf-custom-search" type="text" placeholder="e.g. storyteller fiction novel">
+            </div>
+            <div>
+              <label for="hf-custom-keep">Keep how many</label>
+              <input id="hf-custom-keep" type="number" min="1" max="10" value="2">
+            </div>
+          </div>
+          <label style="margin-top:0.6rem;font-weight:500;">
+            <input type="checkbox" id="hf-custom-nongguf"> Also allow models that are not GGUF
+          </label>
+          <div class="actions">
+            <button type="button" id="hf-custom-add">Add category</button>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" id="refresh">Refresh suggestions</button>
+        </div>
+      </section>
+      <section id="hf-results"></section>
+      <section class="panel" id="installed-panel">
+        <h2 style="font-family: Palatino, Georgia, serif; font-size: 1.25rem; margin: 0 0 0.4rem; color: var(--plum-dark);">Already downloaded models</h2>
+        <p class="hint">Retire moves a model into the retired folder. It is never deleted.</p>
+        <ul class="installed" id="installed-list"><li>Nothing downloaded yet.</li></ul>
+      </section>
+    </div>
+
+    <div id="pane-gh" role="tabpanel" class="hidden">
+      <section class="panel">
+        <label>Which kinds of GitHub projects should we look for?</label>
+        <p class="hint">Searches public GitHub and keeps projects updated in about the last 12 months, ranked by stars. Nothing is cloned until you approve it.</p>
+        <div class="cats" id="gh-cats"></div>
+        <div class="actions">
+          <button type="button" class="secondary" id="gh-all">Select all</button>
+          <button type="button" class="secondary" id="gh-none">Select none</button>
+          <button type="button" class="linkish" id="toggle-gh-custom">+ Add your own category</button>
+        </div>
+        <div class="custom-form hidden" id="gh-custom">
+          <div class="row three">
+            <div>
+              <label for="gh-custom-name">Name</label>
+              <input id="gh-custom-name" type="text" placeholder="e.g. Note taking">
+            </div>
+            <div>
+              <label for="gh-custom-search">Search words</label>
+              <input id="gh-custom-search" type="text" placeholder='e.g. "note taking" OR obsidian'>
+            </div>
+            <div>
+              <label for="gh-custom-keep">Keep how many</label>
+              <input id="gh-custom-keep" type="number" min="1" max="10" value="5">
+            </div>
+          </div>
+          <div class="actions">
+            <button type="button" id="gh-custom-add">Add category</button>
+          </div>
+        </div>
+        <div style="margin-top:1rem;">
+          <label for="gh-token">Optional GitHub token</label>
+          <input id="gh-token" type="password" placeholder="Leave blank unless searches are rate-limited" autocomplete="off">
+          <p class="hint" id="gh-token-hint">Without a token, GitHub allows only a few searches per minute. A personal access token (classic, public-repo read is enough) is saved only on this computer, in a hidden local file, never sent anywhere except GitHub.</p>
+        </div>
+        <div class="actions">
+          <button type="button" class="secondary" id="save-token">Save token</button>
+          <button type="button" id="gh-refresh">Refresh suggestions</button>
+        </div>
+      </section>
+      <section id="gh-results"></section>
+      <section class="panel">
+        <h2 style="font-family: Palatino, Georgia, serif; font-size: 1.25rem; margin: 0 0 0.4rem; color: var(--plum-dark);">Already downloaded repos</h2>
+        <p class="hint">Update runs git pull when git was used, or re-downloads the zip if it was not. Retire moves the folder; it is never deleted.</p>
+        <ul class="installed" id="gh-installed-list"><li>Nothing downloaded yet.</li></ul>
+      </section>
+    </div>
+
+    <footer>
+      Models go to <span class="path" id="path-hint">incoming/&lt;computer&gt;/&lt;tag&gt;/</span>.
+      Links you paste go to <span class="path">incoming/&lt;computer&gt;/manual/</span>.
+      GitHub repos go to <span class="path" id="gh-path-hint">incoming/github/&lt;tag&gt;/</span>.
+      Retired items go to the matching retired folder. Close the terminal or command window when you are finished.
+    </footer>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let info = null;
+    let pollTimer = null;
+    let tab = "hf";
+
+    const fmtBytes = (gb, bytes) => {
+      if (typeof gb === "number") {
+        if (gb >= 1) return gb.toFixed(1) + " GB";
+        if (gb > 0) return (gb * 1024).toFixed(0) + " MB";
+      }
+      if (bytes) return (bytes / (1024 * 1024)).toFixed(0) + " MB";
+      return "size unknown";
+    };
+    const downloads = (n) => {
+      n = n || 0;
+      if (n >= 1000000) return (n / 1000000).toFixed(1) + "M downloads";
+      if (n >= 1000) return (n / 1000).toFixed(1) + "K downloads";
+      return n + " downloads";
+    };
+    const stars = (n) => {
+      n = n || 0;
+      if (n >= 1000) return (n / 1000).toFixed(1) + "k stars";
+      return n + " stars";
+    };
+
+    async function api(path, opts) {
+      const res = await fetch(path, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ("Request failed (" + res.status + ")"));
+      return data;
+    }
+    function setBanner(kind, text) {
+      const el = $("status-banner");
+      el.className = "banner " + (kind || "info");
+      el.textContent = text;
+    }
+    function titleCase(s) {
+      return (s || "").replace(/(^|_)([a-z])/g, (_, a, b) => (a ? " " : "") + b.toUpperCase());
+    }
+
+    function switchTab(next) {
+      tab = next;
+      $("tab-hf").setAttribute("aria-selected", next === "hf" ? "true" : "false");
+      $("tab-gh").setAttribute("aria-selected", next === "gh" ? "true" : "false");
+      $("pane-hf").classList.toggle("hidden", next !== "hf");
+      $("pane-gh").classList.toggle("hidden", next !== "gh");
+    }
+
+    function fillMachines(current) {
+      const sel = $("machine");
+      sel.innerHTML = "";
+      (info.machines || []).forEach((m) => {
+        const opt = document.createElement("option");
+        opt.value = m.key;
+        opt.textContent = m.name;
+        if (m.key === current) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      updateMachineHint();
+    }
+    function currentMachineInfo() {
+      const key = $("machine").value;
+      return (info.machines || []).find((m) => m.key === key);
+    }
+    function updateMachineHint() {
+      const m = currentMachineInfo();
+      if (!m) { $("machine-hint").textContent = ""; return; }
+      const mem = m.vram_gb ? (m.vram_gb + " GB memory, ") : "";
+      const fmts = (m.formats || []).map((f) => f.toUpperCase()).join(" and ");
+      let text = "Fits models up to about " + m.max_model_gb + " GB (" + mem + fmts + ").";
+      if (info.suggested_machine === m.key) text += " Suggested for this computer (" + info.os + ").";
+      if (m.note) text += " " + m.note;
+      $("machine-hint").textContent = text;
+    }
+
+    function renderCategories(scope) {
+      const list = ((info.categories || {})[scope] || []);
+      const host = $(scope === "hf" ? "hf-cats" : "gh-cats");
+      host.innerHTML = "";
+      list.forEach((cat) => {
+        const box = document.createElement("label");
+        box.className = "cat";
+        const check = document.createElement("input");
+        check.type = "checkbox";
+        check.checked = !!cat.selected;
+        check.dataset.key = cat.key;
+        check.addEventListener("change", () => saveSelections(scope));
+        const mid = document.createElement("div");
+        const name = document.createElement("div");
+        name.className = "name";
+        name.textContent = cat.name;
+        if (cat.custom) {
+          const b = document.createElement("span");
+          b.className = "badge";
+          b.textContent = "yours";
+          name.appendChild(b);
+        }
+        const desc = document.createElement("p");
+        desc.className = "desc";
+        desc.textContent = cat.description || "";
+        mid.appendChild(name);
+        mid.appendChild(desc);
+        if (cat.custom) {
+          const rm = document.createElement("button");
+          rm.type = "button";
+          rm.className = "linkish";
+          rm.textContent = "Remove";
+          rm.addEventListener("click", (e) => { e.preventDefault(); removeCategory(scope, cat.key); });
+          mid.appendChild(rm);
+        }
+        const keepWrap = document.createElement("div");
+        const keep = document.createElement("input");
+        keep.className = "keep";
+        keep.type = "number";
+        keep.min = "1";
+        keep.max = "10";
+        keep.value = cat.keep;
+        keep.title = "How many suggestions to keep";
+        keep.addEventListener("change", () => saveKeep(scope, cat.key, keep.value));
+        keepWrap.appendChild(keep);
+        box.appendChild(check);
+        box.appendChild(mid);
+        box.appendChild(keepWrap);
+        host.appendChild(box);
+      });
+    }
+
+    function selectedKeys(scope) {
+      const host = $(scope === "hf" ? "hf-cats" : "gh-cats");
+      return [...host.querySelectorAll("input[type=checkbox]")].filter((c) => c.checked).map((c) => c.dataset.key);
+    }
+
+    async function saveSelections(scope) {
+      const body = { machine: $("machine").value };
+      if (scope === "hf") body.hf_categories = selectedKeys("hf");
+      else body.github_categories = selectedKeys("github");
+      try {
+        info = await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      } catch (err) {
+        setBanner("err", err.message);
+      }
+    }
+    async function saveKeep(scope, key, keep) {
+      try {
+        info = await api("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ machine: $("machine").value, scope, category: key, keep: Number(keep) })
+        });
+        renderCategories(scope === "hf" ? "hf" : "github");
+      } catch (err) {
+        setBanner("err", err.message);
+      }
+    }
+    async function addCategory(scope) {
+      const prefix = scope === "hf" ? "hf" : "gh";
+      const body = {
+        action: "add",
+        scope: scope === "hf" ? "hf" : "github",
+        machine: $("machine").value,
+        name: $(prefix + "-custom-name").value,
+        search: $(prefix + "-custom-search").value,
+        keep: Number($(prefix + "-custom-keep").value || (scope === "hf" ? 2 : 5))
+      };
+      if (scope === "hf") body.allow_nongguf = $("hf-custom-nongguf").checked;
+      try {
+        info = await api("/api/categories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        renderCategories(scope === "hf" ? "hf" : "github");
+        $(prefix + "-custom-name").value = "";
+        $(prefix + "-custom-search").value = "";
+        $(prefix + "-custom").classList.add("hidden");
+        setBanner("ok", "Added your category and ticked it for this computer.");
+      } catch (err) {
+        setBanner("err", err.message);
+      }
+    }
+    async function removeCategory(scope, key) {
+      if (!confirm("Remove this category you added? Built-in ones cannot be removed, only unticked.")) return;
+      try {
+        info = await api("/api/categories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "remove", scope: scope === "hf" ? "hf" : "github", key, machine: $("machine").value })
+        });
+        renderCategories(scope === "hf" ? "hf" : "github");
+        setBanner("ok", "Removed that category.");
+      } catch (err) {
+        setBanner("err", err.message);
+      }
+    }
+
+    function renderInstalled(list) {
+      const ul = $("installed-list");
+      ul.innerHTML = "";
+      if (!list || !list.length) {
+        ul.innerHTML = "<li>Nothing downloaded yet.</li>";
+        return;
+      }
+      list.forEach((item) => {
+        const li = document.createElement("li");
+        const left = document.createElement("div");
+        const title = document.createElement("div");
+        title.textContent = item.name + "  ·  " + item.tag + "  ·  " + fmtBytes(item.size_gb);
+        const path = document.createElement("div");
+        path.className = "path";
+        path.textContent = item.path;
+        left.appendChild(title);
+        left.appendChild(path);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "danger";
+        btn.textContent = "Retire";
+        btn.addEventListener("click", () => retireHf(item));
+        li.appendChild(left);
+        li.appendChild(btn);
+        ul.appendChild(li);
+      });
+    }
+
+    function renderGhInstalled(list) {
+      const ul = $("gh-installed-list");
+      ul.innerHTML = "";
+      if (!list || !list.length) {
+        ul.innerHTML = "<li>Nothing downloaded yet.</li>";
+        return;
+      }
+      list.forEach((item) => {
+        const li = document.createElement("li");
+        const left = document.createElement("div");
+        const title = document.createElement("div");
+        title.textContent = item.name + "  ·  " + item.category + "  ·  " + fmtBytes(item.size_gb) + (item.is_git ? "  ·  git" : "  ·  zip");
+        const path = document.createElement("div");
+        path.className = "path";
+        path.textContent = item.path;
+        left.appendChild(title);
+        left.appendChild(path);
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        actions.style.marginTop = "0";
+        const up = document.createElement("button");
+        up.type = "button";
+        up.className = "secondary";
+        up.textContent = "Update";
+        up.addEventListener("click", () => updateRepo(item));
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "danger";
+        btn.textContent = "Retire";
+        btn.addEventListener("click", () => retireGh(item));
+        actions.appendChild(up);
+        actions.appendChild(btn);
+        li.appendChild(left);
+        li.appendChild(actions);
+        ul.appendChild(li);
+      });
+    }
+
+    function renderHfResults(data) {
+      const root = $("hf-results");
+      root.innerHTML = "";
+      if (!data || !data.tags) return;
+      data.tags.forEach((tag) => {
+        const panel = document.createElement("section");
+        panel.className = "panel tag-block";
+        const h = document.createElement("h2");
+        h.textContent = (tag.title || titleCase(tag.name)) + "  ·  keeping " + tag.keep;
+        panel.appendChild(h);
+        if (tag.description) {
+          const d = document.createElement("p");
+          d.className = "hint";
+          d.textContent = tag.description;
+          panel.appendChild(d);
+        }
+        if (tag.error) {
+          const p = document.createElement("p");
+          p.className = "hint";
+          p.textContent = tag.error;
+          panel.appendChild(p);
+        }
+        const models = tag.models || [];
+        if (!models.length && !tag.error) {
+          const p = document.createElement("p");
+          p.className = "hint";
+          p.textContent = "No models in this category currently fit this computer.";
+          panel.appendChild(p);
+        }
+        models.forEach((model) => panel.appendChild(modelRow(model, tag.name)));
+        if (models.length) {
+          const actions = document.createElement("div");
+          actions.className = "actions";
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = "Approve & download selected in " + (tag.title || titleCase(tag.name));
+          btn.addEventListener("click", () => downloadSelected(panel, startHfDownload));
+          actions.appendChild(btn);
+          panel.appendChild(actions);
+        }
+        root.appendChild(panel);
+      });
+    }
+
+    function renderGhResults(data) {
+      const root = $("gh-results");
+      root.innerHTML = "";
+      if (!data || !data.tags) return;
+      data.tags.forEach((tag) => {
+        const panel = document.createElement("section");
+        panel.className = "panel tag-block";
+        const h = document.createElement("h2");
+        h.textContent = (tag.title || titleCase(tag.name)) + "  ·  keeping " + tag.keep;
+        panel.appendChild(h);
+        if (tag.description) {
+          const d = document.createElement("p");
+          d.className = "hint";
+          d.textContent = tag.description;
+          panel.appendChild(d);
+        }
+        if (tag.error) {
+          const p = document.createElement("p");
+          p.className = "hint";
+          p.textContent = tag.error;
+          panel.appendChild(p);
+        }
+        const repos = tag.repos || [];
+        if (!repos.length && !tag.error) {
+          const p = document.createElement("p");
+          p.className = "hint";
+          p.textContent = "No recently updated repositories matched this category.";
+          panel.appendChild(p);
+        }
+        repos.forEach((repo) => panel.appendChild(repoRow(repo, tag.name)));
+        if (repos.length) {
+          const actions = document.createElement("div");
+          actions.className = "actions";
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = "Approve & download selected in " + (tag.title || titleCase(tag.name));
+          btn.addEventListener("click", () => downloadSelected(panel, startGhDownload));
+          actions.appendChild(btn);
+          panel.appendChild(actions);
+        }
+        root.appendChild(panel);
+      });
+    }
+
+    function modelRow(model, tag) {
+      const row = document.createElement("div");
+      row.className = "model";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.dataset.id = model.id;
+      box.dataset.tag = tag;
+      box.dataset.format = model.format || "gguf";
+      box.dataset.file = model.file || "";
+      box.dataset.filePath = model.file_path || model.file || "";
+      box.dataset.size = model.size || 0;
+      const body = document.createElement("div");
+      const h = document.createElement("h3");
+      const link = document.createElement("a");
+      link.href = model.card_url || ("https://huggingface.co/" + model.id);
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = model.id;
+      h.appendChild(link);
+      const badge = document.createElement("span");
+      badge.className = "badge " + (model.format || "");
+      badge.textContent = (model.format || "gguf").toUpperCase();
+      h.appendChild(badge);
+      if (model.allowed) {
+        const ok = document.createElement("span");
+        ok.className = "badge allowed";
+        ok.textContent = "approved";
+        h.appendChild(ok);
+      }
+      const meta = document.createElement("p");
+      meta.className = "meta";
+      const fileLabel = model.file_path === "(whole model)" || model.file === "(whole model)" ? "whole model" : (model.file || model.file_path);
+      meta.textContent = downloads(model.downloads) + "  ·  " + fileLabel + "  ·  " + fmtBytes(model.size_gb, model.size);
+      body.appendChild(h);
+      body.appendChild(meta);
+      if (model.app_note) {
+        const note = document.createElement("p");
+        note.className = "hint";
+        note.textContent = model.app_note;
+        body.appendChild(note);
+      }
+      const one = document.createElement("div");
+      one.className = "actions";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "secondary";
+      btn.textContent = "Approve & download";
+      btn.addEventListener("click", () => startHfDownload([itemFromDataset(box.dataset)]));
+      one.appendChild(btn);
+      body.appendChild(one);
+      row.appendChild(box);
+      row.appendChild(body);
+      return row;
+    }
+
+    function repoRow(repo, tag) {
+      const row = document.createElement("div");
+      row.className = "repo";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.dataset.id = repo.id;
+      box.dataset.tag = tag;
+      box.dataset.branch = repo.default_branch || "main";
+      const body = document.createElement("div");
+      const h = document.createElement("h3");
+      const link = document.createElement("a");
+      link.href = repo.url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = repo.id;
+      h.appendChild(link);
+      if (repo.allowed) {
+        const ok = document.createElement("span");
+        ok.className = "badge allowed";
+        ok.textContent = "approved";
+        h.appendChild(ok);
+      }
+      const meta = document.createElement("p");
+      meta.className = "meta";
+      meta.textContent = stars(repo.stars) + "  ·  updated " + (repo.pushed_at_pretty || "") + "  ·  license: " + (repo.license || "Unknown") + (repo.language ? "  ·  " + repo.language : "");
+      const desc = document.createElement("p");
+      desc.className = "hint";
+      desc.textContent = repo.description || "No description given.";
+      const one = document.createElement("div");
+      one.className = "actions";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "secondary";
+      btn.textContent = "Approve & download";
+      btn.addEventListener("click", () => startGhDownload([{ id: repo.id, tag, default_branch: repo.default_branch || "main" }]));
+      one.appendChild(btn);
+      body.appendChild(h);
+      body.appendChild(meta);
+      body.appendChild(desc);
+      body.appendChild(one);
+      row.appendChild(box);
+      row.appendChild(body);
+      return row;
+    }
+
+    function itemFromDataset(ds) {
+      return { id: ds.id, tag: ds.tag, format: ds.format, file: ds.file, file_path: ds.filePath, size: Number(ds.size || 0) };
+    }
+    function downloadSelected(panel, starter) {
+      const boxes = [...panel.querySelectorAll("input[type=checkbox]")].filter((b) => b.checked);
+      if (!boxes.length) {
+        setBanner("err", "Tick the checkbox next to an item first, or use the button on that item.");
+        return;
+      }
+      if (starter === startGhDownload) {
+        starter(boxes.map((b) => ({ id: b.dataset.id, tag: b.dataset.tag, default_branch: b.dataset.branch || "main" })));
+      } else {
+        starter(boxes.map((b) => itemFromDataset(b.dataset)));
+      }
+    }
+
+    async function startHfDownload(items) {
+      try {
+        await api("/api/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ machine: $("machine").value, items })
+        });
+        setBanner("info", "Approving and downloading. You can watch the progress below.");
+        startPolling();
+      } catch (err) { setBanner("err", err.message); }
+    }
+    async function startGhDownload(items) {
+      try {
+        await api("/api/github/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items })
+        });
+        setBanner("info", "Approving and downloading. If git is installed it will clone; otherwise it will download a zip.");
+        startPolling();
+      } catch (err) { setBanner("err", err.message); }
+    }
+    async function updateRepo(item) {
+      try {
+        await api("/api/github/update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: item.name, category: item.category, tag: item.category })
+        });
+        setBanner("info", "Updating " + item.name + "…");
+        startPolling();
+      } catch (err) { setBanner("err", err.message); }
+    }
+    async function retireHf(item) {
+      if (!confirm("Move “" + item.name + "” to the retired folder? It will not be deleted.")) return;
+      try {
+        const data = await api("/api/retire", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ machine: item.machine, tag: item.tag, relative_path: item.relative_path })
+        });
+        setBanner("ok", "Moved to the retired folder: " + data.retired_to);
+        renderInstalled(data.installed);
+      } catch (err) { setBanner("err", err.message); }
+    }
+    async function retireGh(item) {
+      if (!confirm("Move “" + item.name + "” to the retired folder? It will not be deleted.")) return;
+      try {
+        const data = await api("/api/github/retire", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ category: item.category, tag: item.category, relative_path: item.relative_path })
+        });
+        setBanner("ok", "Moved to the retired folder: " + data.retired_to);
+        renderGhInstalled(data.github_installed);
+      } catch (err) { setBanner("err", err.message); }
+    }
+
+    function showProgress(job) {
+      const panel = $("progress-panel");
+      const jobs = [
+        { j: job.refresh, kind: "search" },
+        { j: job.download, kind: "download" },
+        { j: job.github_refresh, kind: "search" },
+        { j: job.github_download, kind: "download" }
+      ];
+      const running = jobs.find((x) => x.j && x.j.status === "running");
+      const erred = jobs.find((x) => x.j && x.j.status === "error");
+      const done = jobs.filter((x) => x.j && x.j.status === "done").pop();
+      const busy = !!running;
+      $("refresh").disabled = busy;
+      $("gh-refresh").disabled = busy;
+      $("save-folder").disabled = busy;
+      $("machine").disabled = busy;
+      if ($("hf-check")) $("hf-check").disabled = busy;
+      if ($("save-hf-token")) $("save-hf-token").disabled = busy;
+      const logSource = (job.download && (job.download.log || []).length && job.download) ||
+                        (job.github_download && (job.github_download.log || []).length && job.github_download);
+      if (!busy && !erred && !(done && logSource)) {
+        if (!logSource) panel.hidden = true;
+      } else {
+        panel.hidden = false;
+      }
+      if (running) {
+        const j = running.j;
+        $("progress-label").textContent = j.message || "Working…";
+        const pct = running.kind === "download" ? (j.percent != null ? j.percent : 15) : 35;
+        $("progress-bar").style.width = pct + "%";
+        $("progress-text").textContent = j.message || "";
+        if ((j.log || []).length) {
+          $("progress-log").hidden = false;
+          $("progress-log").textContent = j.log.join("\n");
+        } else {
+          $("progress-log").hidden = true;
+        }
+      } else if (erred) {
+        $("progress-label").textContent = "Something went wrong";
+        setBanner("err", erred.j.error || "Please try again.");
+        $("progress-text").textContent = erred.j.message || "";
+        if ((erred.j.log || []).length) {
+          $("progress-log").hidden = false;
+          $("progress-log").textContent = erred.j.log.join("\n");
+        }
+      } else if (done) {
+        $("progress-label").textContent = "Finished";
+        $("progress-bar").style.width = "100%";
+        $("progress-text").textContent = done.j.message || "";
+        if (done.j.message) setBanner("ok", done.j.message);
+        if (logSource) {
+          $("progress-log").hidden = false;
+          $("progress-log").textContent = (logSource.log || []).join("\n");
+        }
+      }
+      const failed = (job.download && job.download.failed) || [];
+      const retryBtn = $("retry-failed");
+      if (retryBtn) {
+        const showRetry = !busy && failed.length > 0;
+        retryBtn.classList.toggle("hidden", !showRetry);
+        retryBtn.disabled = busy;
+      }
+    }
+
+    async function poll() {
+      try {
+        const job = await api("/api/job");
+        showProgress(job);
+        if (job.refresh && job.refresh.status === "done" && job.refresh.data) renderHfResults(job.refresh.data);
+        if (job.github_refresh && job.github_refresh.status === "done" && job.github_refresh.data) renderGhResults(job.github_refresh.data);
+        if (job.installed) renderInstalled(job.installed);
+        if (job.github_installed) renderGhInstalled(job.github_installed);
+        const busy = ["refresh", "download", "github_refresh", "github_download"].some((k) => job[k] && job[k].status === "running");
+        if (!busy && pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      } catch (err) {
+        setBanner("err", err.message);
+      }
+    }
+    function startPolling() {
+      if (pollTimer) return;
+      pollTimer = setInterval(poll, 700);
+      poll();
+    }
+
+    $("tab-hf").addEventListener("click", () => switchTab("hf"));
+    $("tab-gh").addEventListener("click", () => switchTab("gh"));
+    $("machine").addEventListener("change", async () => {
+      updateMachineHint();
+      try {
+        info = await api("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ machine: $("machine").value })
+        });
+        renderCategories("hf");
+        renderCategories("github");
+        $("hf-results").innerHTML = "";
+        $("gh-results").innerHTML = "";
+        renderInstalled(info.installed || []);
+        renderGhInstalled(info.github_installed || []);
+        setBanner("info", "Computer changed. Category ticks above are the ones saved for this computer. Click Refresh suggestions to search.");
+      } catch (err) { setBanner("err", err.message); }
+    });
+    $("save-folder").addEventListener("click", async () => {
+      try {
+        info = await api("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ base_folder: $("base-folder").value })
+        });
+        $("base-folder").value = info.base_folder || "";
+        $("path-hint").textContent = info.base_folder + "/incoming/<computer>/<tag>/";
+        $("gh-path-hint").textContent = info.base_folder + "/incoming/github/<tag>/";
+        setBanner("ok", "Saved. New downloads will go to " + info.base_folder);
+      } catch (err) { setBanner("err", err.message); }
+    });
+    $("refresh").addEventListener("click", async () => {
+      try {
+        await api("/api/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ machine: $("machine").value, categories: selectedKeys("hf") })
+        });
+        setBanner("info", "Searching Hugging Face for the ticked categories. This can take a few minutes if many are selected.");
+        $("hf-results").innerHTML = "";
+        startPolling();
+      } catch (err) { setBanner("err", err.message); }
+    });
+    $("gh-refresh").addEventListener("click", async () => {
+      try {
+        await api("/api/github/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ machine: $("machine").value, categories: selectedKeys("github") })
+        });
+        setBanner("info", "Searching GitHub for the ticked categories. Nothing will be downloaded yet.");
+        $("gh-results").innerHTML = "";
+        startPolling();
+      } catch (err) { setBanner("err", err.message); }
+    });
+    $("save-token").addEventListener("click", async () => {
+      try {
+        info = await api("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ github_token: $("gh-token").value })
+        });
+        $("gh-token").value = "";
+        $("gh-token-hint").textContent = info.github_token_set
+          ? "A token is saved on this computer only. Leave the box blank and click Save token to clear it."
+          : "No token saved. Searches will use GitHub's public rate limit.";
+        setBanner("ok", info.github_token_set ? "Token saved on this computer only." : "Token cleared.");
+      } catch (err) { setBanner("err", err.message); }
+    });
+    $("hf-all").addEventListener("click", () => { $$check("hf-cats", true); saveSelections("hf"); });
+    $("hf-none").addEventListener("click", () => { $$check("hf-cats", false); saveSelections("hf"); });
+    $("gh-all").addEventListener("click", () => { $$check("gh-cats", true); saveSelections("github"); });
+    $("gh-none").addEventListener("click", () => { $$check("gh-cats", false); saveSelections("github"); });
+    function $$check(id, on) { $(id).querySelectorAll("input[type=checkbox]").forEach((c) => { c.checked = on; }); }
+    $("toggle-hf-custom").addEventListener("click", () => $("hf-custom").classList.toggle("hidden"));
+    $("toggle-gh-custom").addEventListener("click", () => $("gh-custom").classList.toggle("hidden"));
+    $("hf-custom-add").addEventListener("click", () => addCategory("hf"));
+    $("gh-custom-add").addEventListener("click", () => addCategory("github"));
+
+
+    let lastInspect = null;
+
+    function fmtFile(f) {
+      return fmtBytes(f.size_gb, f.size);
+    }
+
+    function renderPaste(data) {
+      lastInspect = data;
+      const box = $("paste-result");
+      box.classList.remove("hidden");
+      box.innerHTML = "";
+      const title = document.createElement("h2");
+      title.style.cssText = "font-family: Palatino, Georgia, serif; font-size: 1.25rem; margin: 0.8rem 0 0.35rem; color: var(--plum-dark);";
+      const link = document.createElement("a");
+      link.href = data.card_url || ("https://huggingface.co/" + data.id);
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = data.id;
+      title.appendChild(link);
+      if (data.format) {
+        const b = document.createElement("span");
+        b.className = "badge " + data.format;
+        b.textContent = String(data.format).toUpperCase();
+        title.appendChild(b);
+      }
+      box.appendChild(title);
+
+      if (data.gated || data.gated_blocked) {
+        const ban = document.createElement("div");
+        ban.className = "banner " + (data.gated_blocked ? "err" : "info");
+        ban.textContent = data.message || (data.id + " is gated. Open the model page, accept the license, then paste a Hugging Face token and click Check again.");
+        box.appendChild(ban);
+      }
+      if (data.warning) {
+        const ban = document.createElement("div");
+        ban.className = "banner";
+        ban.textContent = data.warning;
+        box.appendChild(ban);
+      }
+
+      const meta = document.createElement("p");
+      meta.className = "meta";
+      const bits = [];
+      bits.push("license: " + (data.license || "Unknown"));
+      if (data.total_size) bits.push("total " + fmtBytes(data.total_size_gb, data.total_size));
+      if (data.weight_size && data.weight_size !== data.total_size) bits.push("weights " + fmtBytes(data.weight_size_gb, data.weight_size));
+      if (data.formats && data.formats.length) bits.push("format: " + data.formats.join(", "));
+      if (data.pipeline_tag) bits.push(data.pipeline_tag);
+      if (data.gated) bits.push("gated");
+      meta.textContent = bits.join("  ·  ");
+      box.appendChild(meta);
+      if (data.app_note) {
+        const note = document.createElement("p");
+        note.className = "hint";
+        note.textContent = data.app_note;
+        box.appendChild(note);
+      }
+
+      if (data.gated_blocked && !(data.files || []).length) {
+        return;
+      }
+
+      const files = data.files || [];
+      if (files.length) {
+        const wrap = document.createElement("div");
+        wrap.className = "file-list";
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        thead.innerHTML = "<tr><th>File</th><th>Size</th><th>Format</th></tr>";
+        table.appendChild(thead);
+        const tb = document.createElement("tbody");
+        const shown = files.slice(0, 40);
+        shown.forEach((f) => {
+          const tr = document.createElement("tr");
+          const a = document.createElement("td"); a.textContent = f.path;
+          const b = document.createElement("td"); b.textContent = fmtFile(f);
+          const c = document.createElement("td"); c.textContent = f.format || "";
+          tr.appendChild(a); tr.appendChild(b); tr.appendChild(c);
+          tb.appendChild(tr);
+        });
+        table.appendChild(tb);
+        wrap.appendChild(table);
+        box.appendChild(wrap);
+        if (files.length > 40) {
+          const more = document.createElement("p");
+          more.className = "hint";
+          more.textContent = "Showing 40 of " + files.length + " files.";
+          box.appendChild(more);
+        }
+      }
+
+      const pickWrap = document.createElement("div");
+      const pickLabel = document.createElement("label");
+      pickLabel.textContent = data.has_gguf ? "What should we download?" : "This will download the whole model folder.";
+      pickWrap.appendChild(pickLabel);
+      const list = document.createElement("ul");
+      list.className = "pick-list";
+      const defaultPath = (data.default_pick && data.default_pick.path) || "(whole model)";
+      if (data.has_gguf) {
+        (data.gguf_files || []).forEach((f) => {
+          const li = document.createElement("li");
+          const lab = document.createElement("label");
+          lab.style.fontWeight = "500";
+          const radio = document.createElement("input");
+          radio.type = "radio";
+          radio.name = "hf-pick";
+          radio.value = f.path;
+          if (f.path === defaultPath) radio.checked = true;
+          lab.appendChild(radio);
+          lab.appendChild(document.createTextNode(f.path.split("/").pop() + "  ·  " + fmtFile(f)));
+          li.appendChild(lab);
+          list.appendChild(li);
+        });
+      }
+      const liWhole = document.createElement("li");
+      const labW = document.createElement("label");
+      labW.style.fontWeight = "500";
+      const radioW = document.createElement("input");
+      radioW.type = "radio";
+      radioW.name = "hf-pick";
+      radioW.value = "(whole model)";
+      if (!data.has_gguf || defaultPath === "(whole model)") radioW.checked = true;
+      labW.appendChild(radioW);
+      labW.appendChild(document.createTextNode("Whole repo  ·  " + fmtBytes(data.total_size_gb, data.total_size)));
+      liWhole.appendChild(labW);
+      list.appendChild(liWhole);
+      pickWrap.appendChild(list);
+      box.appendChild(pickWrap);
+
+      if (data.suggest_skip_bin) {
+        const lab = document.createElement("label");
+        lab.style.fontWeight = "500";
+        lab.style.marginTop = "0.6rem";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.id = "hf-skip-bin";
+        cb.checked = true;
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(" Skip extra .bin copies (safetensors files are already here)"));
+        box.appendChild(lab);
+      }
+
+      if (!data.gated_blocked) {
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.id = "hf-paste-download";
+        btn.textContent = "Approve & download";
+        btn.addEventListener("click", downloadPasted);
+        actions.appendChild(btn);
+        box.appendChild(actions);
+      }
+    }
+
+    async function downloadPasted() {
+      if (!lastInspect) return;
+      const picked = document.querySelector('input[name="hf-pick"]:checked');
+      const filePath = picked ? picked.value : "(whole model)";
+      const skip = ($("hf-skip-bin") && $("hf-skip-bin").checked) || false;
+      const whole = filePath === "(whole model)";
+      const item = {
+        id: lastInspect.id,
+        tag: "manual",
+        format: whole ? (lastInspect.format || "weights") : "gguf",
+        file: whole ? "(whole model)" : filePath.split("/").pop(),
+        file_path: filePath,
+        size: whole ? (lastInspect.total_size || 0) : ((lastInspect.gguf_files || []).find((f) => f.path === filePath) || {}).size || 0,
+        whole_repo: whole,
+        skip_bin_duplicates: skip
+      };
+      try {
+        await startHfDownload([item]);
+      } catch (err) {
+        setBanner("err", err.message);
+      }
+    }
+
+    $("retry-failed").addEventListener("click", async () => {
+      $("retry-failed").disabled = true;
+      try {
+        await api("/api/download/retry", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ machine: $("machine").value })
+        });
+        setBanner("ok", "Retrying the downloads that had a problem…");
+        startPolling();
+      } catch (err) {
+        setBanner("err", err.message);
+        $("retry-failed").disabled = false;
+      }
+    });
+
+    $("hf-check").addEventListener("click", async () => {
+      const url = $("hf-paste").value;
+      $("hf-check").disabled = true;
+      $("paste-result").classList.add("hidden");
+      setBanner("info", "Checking that model on Hugging Face…");
+      try {
+        const data = await api("/api/hf/inspect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url, machine: $("machine").value })
+        });
+        renderPaste(data);
+        if (data.gated_blocked) setBanner("err", data.message || "This model is gated.");
+        else if (data.warning) setBanner("info", "Checked. " + data.warning);
+        else setBanner("ok", "Checked " + data.id + ". Nothing has been downloaded yet.");
+      } catch (err) {
+        lastInspect = null;
+        $("paste-result").classList.add("hidden");
+        setBanner("err", err.message);
+      } finally {
+        $("hf-check").disabled = false;
+      }
+    });
+    $("hf-paste").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); $("hf-check").click(); }
+    });
+    $("save-hf-token").addEventListener("click", async () => {
+      try {
+        info = await api("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hf_token: $("hf-token").value })
+        });
+        $("hf-token").value = "";
+        $("hf-token-hint").textContent = info.hf_token_set
+          ? "A Hugging Face token is saved on this computer only. Leave the box blank and click Save token to clear it."
+          : "No token saved. Public models do not need one.";
+        setBanner("ok", info.hf_token_set ? "Hugging Face token saved on this computer only." : "Hugging Face token cleared.");
+      } catch (err) { setBanner("err", err.message); }
+    });
+
+        (async function init() {
+      try {
+        info = await api("/api/info");
+        $("version-label").textContent = "v" + (info.version || "1.3");
+        fillMachines(info.machine || info.suggested_machine);
+        $("base-folder").value = info.base_folder || "";
+        $("path-hint").textContent = (info.base_folder || ".") + "/incoming/<computer>/<tag>/";
+        $("gh-path-hint").textContent = (info.base_folder || ".") + "/incoming/github/<tag>/";
+        renderCategories("hf");
+        renderCategories("github");
+        renderInstalled(info.installed || []);
+        renderGhInstalled(info.github_installed || []);
+        if (info.github_token_set) {
+          $("gh-token-hint").textContent = "A token is already saved on this computer. Leave the box blank and click Save token to clear it.";
+        }
+        if (info.hf_token_set) {
+          $("hf-token-hint").textContent = "A Hugging Face token is already saved on this computer. Leave the box blank and click Save token to clear it.";
+        }
+        if (info.git_available === false) {
+          $("gh-token-hint").textContent += " Git was not found, so downloads will use a zip of the default branch.";
+        }
+        if (info.refresh && info.refresh.data) renderHfResults(info.refresh.data);
+        if (info.github_refresh && info.github_refresh.data) renderGhResults(info.github_refresh.data);
+        showProgress(info);
+        const busy = ["refresh", "download", "github_refresh", "github_download"].some((k) => info[k] && info[k].status === "running");
+        if (busy) startPolling();
+      } catch (err) {
+        setBanner("err", "Could not start the page. Is the ModelRepoFinder window still open? " + err.message);
+      }
+    })();
+  </script>
+</body>
+</html>

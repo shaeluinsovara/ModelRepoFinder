@@ -1,0 +1,371 @@
+# ModelRepoFinder v1.3
+# These are example computers. Rename them, change the size caps, or add
+# your own entries to match the machines you actually use. Set enabled:
+# false to hide a preset from the computer list. Caps are in gigabytes
+# and should usually sit a little under the memory you can spare.
+machines:
+  pc_32gb_gpu:
+    name: Windows PC with a 32 GB GPU
+    vram_gb: 32
+    max_model_gb: 26
+    formats:
+    - gguf
+    hf_categories:
+    - coding
+    - relational
+    - spiritual
+    - vision
+    - music
+    - speech
+    - background
+    - embedding
+    github_categories:
+    - runners
+    - memory_agents
+    - voice
+    - music
+    - vision
+    - home_automation
+    - coding_tools
+  pc_16gb_gpu:
+    name: Windows PC with a 16 GB GPU
+    vram_gb: 16
+    max_model_gb: 13
+    formats:
+    - gguf
+    hf_categories:
+    - coding
+    - relational
+    - spiritual
+    - vision
+    - music
+    - speech
+    - background
+    - embedding
+    github_categories:
+    - runners
+    - memory_agents
+    - voice
+    - music
+    - vision
+    - home_automation
+    - coding_tools
+  pc_24gb_gpu:
+    name: Windows PC with a 24 GB GPU
+    vram_gb: 24
+    max_model_gb: 19
+    formats:
+    - gguf
+    enabled: false
+  mac_16gb:
+    name: Mac with 16 GB unified memory
+    unified_gb: 16
+    max_model_gb: 10
+    formats:
+    - gguf
+    - mlx
+    hf_categories:
+    - coding
+    - relational
+    - spiritual
+    - vision
+    - music
+    - speech
+    - background
+    - embedding
+    github_categories:
+    - runners
+    - memory_agents
+    - voice
+    - music
+    - vision
+    - home_automation
+    - coding_tools
+  mac_32gb:
+    name: Mac with 32 GB unified memory
+    unified_gb: 32
+    max_model_gb: 20
+    formats:
+    - gguf
+    - mlx
+    hf_categories:
+    - coding
+    - relational
+    - spiritual
+    - vision
+    - music
+    - speech
+    - background
+    - embedding
+    github_categories:
+    - runners
+    - memory_agents
+    - voice
+    - music
+    - vision
+    - home_automation
+    - coding_tools
+tags:
+  coding:
+    name: Coding
+    description: Models that help with writing and reading code.
+    hf_search: coder
+    hf_queries:
+    - coder
+    - coding
+    pipeline_tag: text-generation
+    use_pipeline_tag: false
+    keep: 2
+    exclude_id_substrings:
+    - music
+    - tts
+    - whisper
+    - embedding
+    - mmproj
+  relational:
+    name: Emotional / relational chat
+    description: Roleplay, companion, empathetic, creative writing, and uncensored
+      conversation.
+    hf_search: roleplay
+    hf_queries:
+    - roleplay
+    - companion
+    - creative writing
+    - uncensored
+    keywords:
+    - roleplay
+    - role-play
+    - companion
+    - empath
+    - uncensored
+    - creative writing
+    - character
+    - conversational
+    - persona
+    fuzzy_card: true
+    keep: 2
+    exclude_id_substrings:
+    - music
+    - tts
+    - whisper
+    - embedding
+    - mmproj
+  spiritual:
+    name: Spiritual / esoteric knowledge
+    description: Philosophy, theology, esoteric study, and meditation. Search is fuzzy
+      and also looks at model-card words and tags.
+    hf_search: philosophy
+    hf_queries:
+    - philosophy
+    - spiritual
+    - theology
+    - meditation
+    - esoteric
+    keywords:
+    - philosophy
+    - philosophical
+    - theology
+    - theological
+    - esoteric
+    - meditation
+    - spiritual
+    - spirituality
+    - mysticism
+    - mystical
+    - contemplative
+    - wisdom
+    - stoic
+    - stoicism
+    - dharma
+    - scripture
+    fuzzy_card: true
+    keep: 2
+    exclude_id_substrings:
+    - music
+    - tts
+    - whisper
+    - embedding
+    - mmproj
+  vision:
+    name: Vision (image and video)
+    description: Image and video understanding, including VL and video-LLM models.
+    hf_search: VL
+    hf_queries:
+    - VL
+    - video-llm
+    - video language
+    keywords:
+    - vl
+    - vision
+    - video
+    - image-text
+    - video-llm
+    - multimodal
+    keep: 2
+    exclude_id_substrings:
+    - music
+    - tts
+    - whisper
+    - embedding
+  music:
+    name: Music creation (with voice cloning)
+    description: Music generators and voice-conversion models such as ACE-Step, YuE,
+      MusicGen, and RVC. These are often not GGUF.
+    hf_search: MusicGen
+    hf_queries:
+    - ACE-Step
+    - YuE
+    - MusicGen
+    - RVC
+    - so-vits
+    - voice conversion
+    keywords:
+    - music
+    - ace-step
+    - acestep
+    - yue
+    - musicgen
+    - rvc
+    - so-vits
+    - sovits
+    - voice conversion
+    - singing
+    - text-to-music
+    - text-to-audio
+    allow_nongguf: true
+    fuzzy_card: true
+    keep: 2
+    exclude_id_substrings:
+    - embedding
+    - mmproj
+  speech:
+    name: Speech / TTS
+    description: Text-to-speech and speech-to-text (including Whisper).
+    hf_search: TTS
+    hf_queries:
+    - TTS
+    - whisper
+    - text-to-speech
+    - speech-to-text
+    keywords:
+    - tts
+    - whisper
+    - asr
+    - stt
+    - text-to-speech
+    - speech-to-text
+    - piper
+    - kokoro
+    - xtts
+    allow_nongguf: true
+    fuzzy_card: true
+    keep: 2
+    exclude_id_substrings:
+    - musicgen
+    - ace-step
+    - embedding
+    - mmproj
+  background:
+    name: Background / reasoning
+    description: Smaller "thinking" models meant to stay running in the background.
+    hf_search: thinking
+    hf_queries:
+    - thinking
+    - reasoning
+    - r1 distill
+    keywords:
+    - thinking
+    - reasoning
+    - chain-of-thought
+    - distill
+    - r1
+    cap_gb: 8
+    keep: 2
+    exclude_id_substrings:
+    - music
+    - tts
+    - whisper
+    - embedding
+    - mmproj
+    - -VL-
+    - VL-
+    - vision
+    - video
+  embedding:
+    name: Embedding
+    description: Models that turn text into embeddings for search and memory.
+    hf_search: embedding
+    hf_queries:
+    - embedding
+    pipeline_tag: feature-extraction
+    use_pipeline_tag: false
+    keep: 1
+    exclude_id_substrings:
+    - music
+    - tts
+    - whisper
+    - -VL-
+    - coder
+github_tags:
+  runners:
+    name: Local AI runners / frontends
+    description: Apps for running and chatting with local models (Ollama, LM Studio
+      frontends, WebUIs, and similar).
+    queries:
+    - ollama OR "lm studio" OR koboldcpp OR "text-generation-webui" OR "open-webui"
+      OR "llama.cpp"
+    keep: 5
+  memory_agents:
+    name: AI memory / agents
+    description: Agent frameworks and long-term memory / RAG tools for AI persons.
+    queries:
+    - '"ai agent" OR "llm agent" OR "autogen" OR "memgpt" OR "letta" OR "rag memory"
+      OR langchain'
+    keep: 5
+  voice:
+    name: Voice / TTS
+    description: Speech, voice cloning, and text-to-speech projects.
+    queries:
+    - TTS OR "text-to-speech" OR whisper OR piper OR kokoro OR "voice cloning"
+    keep: 5
+  music:
+    name: Music
+    description: Music generation and voice-conversion projects.
+    queries:
+    - '"music generation" OR musicgen OR "ace-step" OR YuE OR RVC OR "so-vits" OR
+      "text-to-music"'
+    keep: 5
+  vision:
+    name: Vision
+    description: Image and video understanding, and local vision toolkits.
+    queries:
+    - '"vision llm" OR "video llm" OR moondream OR "open-vision" OR "image understanding"
+      OR comfyui'
+    keep: 5
+  home_automation:
+    name: Home automation / robotics / sensors
+    description: Home Assistant, robotics, and sensor projects that could later hook
+      into the house.
+    queries:
+    - '"home assistant" OR robotics OR "robot arm" OR "iot sensors" OR "home automation"'
+    keep: 5
+  coding_tools:
+    name: Coding tools
+    description: Local coding assistants, linters, and developer tools.
+    queries:
+    - '"coding assistant" OR "continue dev" OR "tabby" OR "open interpreter" OR "aider"
+      OR "local copilot"'
+    keep: 5
+custom_tags: {}
+github_custom_tags: {}
+taste_tags_later:
+- relational_expression
+- philosophical_spiritual
+paths:
+  base: ''
+  incoming: incoming
+  retired: retired
+  report: report.md
+allow_list: []
+github_allow_list: []
+keep_retired: true
