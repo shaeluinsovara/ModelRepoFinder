@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.6 — scheduled auto-scan
+
+A features release on top of the v1.5 finder and the v1.4 hardening. Every v1.4 safety check is still in place.
+
+- **A scheduled auto-scan, per computer.** In settings you can turn on a scan that runs daily, weekly on a chosen weekday, or every N days, at a time of day you pick. While the app is open, a background check looks at the clock about once a minute. The last run is remembered, and a missed run is caught up the next time you open the app. Turning the schedule off and on again starts a new waiting period, so it will not immediately fire from an old last-run date.
+- **Standing approval, said plainly.** Turning the schedule on is your approval to download models that match the conditions you saved, without a separate Approve click each time. The page says this. "Run now" is a one-off of the same job, and "Dry run / preview" shows what would be downloaded and what would be retired or deleted, without changing anything.
+- **Conditions and limits.** You choose the categories and/or Top picks, the sort (most downloaded, most liked, trending, or newest), the formats, whether models must fit the computer's size cap, optional minimum downloads and likes, and whether to skip models already on this computer (using the v1.5 local scan). Each run is capped by a maximum number of new models, a maximum total of auto-managed models, and a maximum amount of disk for those models.
+- **Cleanup of out-of-date models, with a safe default.** Cleanup only applies to models this schedule downloaded, or to a model you explicitly opted in (from the "Downloaded with this app" list). Models the local scan merely found, and ordinary manual downloads, are left alone. You pick a policy: keep the newest N per category, older than a number of days, or superseded by a newer version of the same family. The default action is **Retire** (move to the retired folder). **Delete permanently** requires you to type DELETE, tick a confirmation, and confirm in a dialog; the same confirmation is required by the local API. Path checks on delete are as strong as on retire, and a delete is refused if it would leave the intended folder.
+- **Safeguards.** At least one model is kept in each category, so you are not left with nothing usable offline. A model is never removed while a download is in progress. Downloads finish and are checked before cleanup starts. If a search or download fails, including when there is no internet, cleanup is skipped; an offline run is retried later and does not move the next scheduled time.
+- **Activity log.** The page shows recent runs: what was added, retired, or deleted, and any errors.
+- **Keeping the app open.** The schedule only runs while ModelRepoFinder is open. The README explains, in plain language, how to add the launcher to macOS Login Items or the Windows Startup folder if you want. The app does not add itself there.
+- This release is about Hugging Face models. GitHub repositories are not auto-downloaded.
+
+
 ## v1.5 — fresh suggestions, local scan, and top picks
 
 A features release on top of the v1.4 hardening. Every v1.4 safety check is still in place.

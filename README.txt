@@ -1,4 +1,4 @@
-ModelRepoFinder  v1.5
+ModelRepoFinder  v1.6
 =====================
 
 This little app looks up open-source AI models on Hugging Face, and
@@ -8,6 +8,44 @@ the ones you approve. Nothing is downloaded until you say so.
 
 The same folder works on Windows and on a Mac. A longer README.md is
 also in this folder (and on GitHub) if you prefer that format.
+
+
+
+What is new in v1.6
+-------------------
+  • A scheduled auto-scan, set up in the app for each computer. You can
+    run it every day, every week on a day you pick, or every N days, at
+    a time of day you choose. While the app is open, it checks the clock
+    about once a minute. If a run was missed because the app was closed,
+    it is caught up the next time you open it.
+  • Turning the schedule on is your standing approval to download models
+    that match the conditions you saved, without a separate Approve click
+    each time. The page says this. A "Dry run / preview" button shows
+    what would be downloaded and what would be retired or deleted, without
+    changing anything. "Run now" does the job once.
+  • You choose the conditions: which categories and/or Top picks, how to
+    sort, which formats, whether models must fit the computer's size cap,
+    optional minimum downloads or likes, and whether to skip models already
+    on this computer. Each run has limits: a maximum number of new models,
+    a maximum total of auto-managed models, and a maximum amount of disk.
+  • Cleanup only applies to models the schedule itself downloaded, or to
+    a model you opted in from the "Downloaded with this app" list. Models
+    the app only found on the computer, and ordinary manual downloads, are
+    left alone. You can keep the newest N per category, retire ones older
+    than a number of days, or retire ones superseded by a newer version
+    of the same family. The default is to move them to the retired folder.
+    Permanent deletion requires you to type DELETE and confirm. At least
+    one model is always kept in each category. Cleanup waits until
+    downloads have finished and been checked, and is skipped if a search
+    or download fails, including when there is no internet.
+  • An activity log shows recent runs and what was added, retired, or
+    deleted. The schedule only runs while this app is open. See "Keeping
+    the app running at login" below if you want it to start when you
+    log in. The app will not add itself there.
+  • This schedule is for Hugging Face models. GitHub repositories are
+    not auto-downloaded.
+  • Every safety check from v1.4, and every finder feature from v1.5,
+    is still in place.
 
 
 What is new in v1.5
@@ -269,6 +307,33 @@ A few gentle rules already built in
   • Retired items are moved, never deleted.
   • Spiritual / esoteric search is a bit fuzzy: it also looks at model-card
     words and tags, because names alone are often not enough.
+
+
+
+Keeping the app running at login (optional)
+-------------------------------------------
+  The scheduled auto-scan only runs while ModelRepoFinder is open. If
+  you want it to start when you log in, you can add the launcher to
+  your computer's startup list yourself. The app will not do this
+  for you, and it will not change those settings.
+
+  On a Mac:
+    1. Open System Settings.
+    2. Go to General, then Login Items (the wording can vary a little
+       by macOS version).
+    3. Click the + button, and choose Start-Mac.command from the
+       ModelRepoFinder folder.
+    The first time, macOS may ask you to confirm. You can also
+    right-click the file and choose Open. Leave the Terminal window
+    open after it starts.
+
+  On Windows:
+    1. Press Windows+R, type shell:startup, and press Enter.
+    2. In the folder that opens, make a shortcut to Start-Windows.bat
+       from the ModelRepoFinder folder.
+    Leave the command window open after it starts.
+
+  Closing that window stops the schedule until you start the app again.
 
 
 If something goes wrong

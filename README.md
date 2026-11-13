@@ -4,7 +4,7 @@ A small local app that helps you find open-source AI models on [Hugging Face](ht
 
 Nothing is downloaded until you say so. The same folder works on Windows and macOS.
 
-This is **v1.5**. It keeps every v1.4 safety check, and adds fresh suggestion batches, a look at models already on this computer, and a Top picks view of popular models that should fit.
+This is **v1.6**. It keeps every v1.4 safety check and the v1.5 finder features, and adds a scheduled auto-scan that can download matching models and tidy out-of-date ones while the app is open.
 
 ## Screenshots
 
@@ -62,7 +62,8 @@ If Python is missing, install Python 3.9+ from [python.org](https://www.python.o
 - **Paste any Hugging Face link.** A model page, an `org/name`, or a `/tree/…` or `/blob/…` link all work. Click **Check** to preview the files, total size, format (GGUF, safetensors, PyTorch, ONNX, MLX, and others), license, and a short note about what can run it. If there are GGUF quality settings, you can pick one or download the whole folder.
 - **A GitHub tab.** Finds recently updated projects (about the last 12 months). You can sort by stars, recent updates, or a fresh mix. Each Refresh shows a new batch. Approve & download will `git clone` if git is installed, or download a zip if it is not. You can **Update** or **Retire** a downloaded repo later.
 - **Resilient downloads.** If a Hugging Face download hits a brief network hiccup, the app retries automatically (up to four times) and picks up what was already saved when it can. You will see a line like `Connection hiccup, retrying (2/4)…`. If Hugging Face’s faster downloader keeps erroring, the app switches to a simpler method. If something still fails, click **Retry failed**. One failure in a batch does not stop the others. You do not need to close the app and start over.
-- **Retire never deletes.** Retire moves a downloaded model or repo into a `retired/` folder so you can get it back if you change your mind.
+- **Scheduled auto-scan.** In settings, you can turn on a daily, weekly, or every-N-days scan for this computer. It looks for models that match conditions you set (categories and/or Top picks, sort, formats, size cap, optional minimum downloads or likes, skip models already here), downloads up to the limits you choose, and can tidy out-of-date models it downloaded itself. Turning it on is standing approval for matching models — the page says this. A Dry run shows what would happen first. Cleanup is skipped if a search or download fails, at least one model is kept per category, and the default cleanup is to retire (move) a model, not to delete it. Permanent deletion requires a typed confirmation. Manual downloads and models only found by the local scan are left alone unless you opt one in. The schedule runs only while the app is open, and a missed run is caught up on the next launch. GitHub repositories are not auto-downloaded.
+- **Retire never deletes.** The Retire button moves a downloaded model or repo into a `retired/` folder so you can get it back if you change your mind. Scheduled cleanup uses the same move by default. Permanent deletion, if you turn it on, is a separate setting and needs an explicit confirmation.
 
 A few other built-in habits: preview is the default; mid-size GGUF quality settings around 70% of the computer’s size cap are preferred; and only as many items as each category’s “keep” count are suggested.
 
@@ -107,6 +108,25 @@ You do not have to be a programmer to change those numbers. Downloads go under `
 Leave the command or Terminal window open and read the message. Check that you are online. If a Hugging Face download fails, wait for the automatic retries, then click **Retry failed** if that button appears. Close the window and start the app again only if it will not open, or if Retry failed does not help.
 
 A plain-language copy of these instructions also lives in `README.txt`, next to the launchers.
+
+## What changed in v1.6
+
+- **A scheduled auto-scan**, configurable per computer: daily, weekly (with a weekday), or every N days, at a time of day you pick. "Run now" and "Dry run / preview" are on the same page, with an activity log of what was added, retired, or deleted.
+- Turning the schedule on is **standing approval** to download models that match your saved conditions, without a separate Approve click. The page says this clearly.
+- **Cleanup** only touches models the schedule downloaded, or ones you opted in. The default is to retire (move) them. Permanent deletion requires you to type DELETE and confirm. Path checks on delete are as strong as on retire. At least one model is kept per category. Cleanup waits until downloads have finished and been checked, and is skipped if a search or download fails (including when there is no internet).
+- **How to keep the app running at login** is explained below, in plain language. The app will not add itself to your startup list.
+
+v1.5's finder features and v1.4's safety checks are unchanged. See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
+## Keeping the app running at login (optional)
+
+The scheduled auto-scan only runs while ModelRepoFinder is open. If you want it to start when you log in, you can add the launcher to your computer's startup list yourself. The app does not do this automatically, and it will not change those settings for you.
+
+**On a Mac:** open System Settings, then General, then Login Items (the wording can vary slightly by macOS version). Click the + button, and choose `Start-Mac.command` from the ModelRepoFinder folder. The first time macOS may ask you to confirm opening it; you can also right-click the file and choose Open. Leave the Terminal window open after it starts.
+
+**On Windows:** press Windows+R, type `shell:startup`, and press Enter. In the folder that opens, make a shortcut to `Start-Windows.bat` from the ModelRepoFinder folder. Leave the command window open after it starts.
+
+Closing that window stops the schedule until you start the app again.
 
 ## What changed in v1.5
 
