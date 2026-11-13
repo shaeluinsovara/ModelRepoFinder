@@ -34,13 +34,13 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertIn(self.token, html)
         self.assertNotIn(self.A.CSRF_PLACEHOLDER, html)
         self.assertIn("ModelRepoFinder", html)
-        self.assertIn("v1.4", html)
+        self.assertIn("v1.5", html)
 
     def test_get_info_ok(self):
         status, data, _ = helpers.http_request(self.port, "GET", "/api/info")
         self.assertEqual(status, 200)
         self.assertEqual(data.get("app"), "ModelRepoFinder")
-        self.assertEqual(data.get("version"), "1.4")
+        self.assertEqual(data.get("version"), "1.5")
         # The token itself must not be offered to a GET of the JSON API.
         blob = str(data)
         self.assertNotIn(self.token, blob)
