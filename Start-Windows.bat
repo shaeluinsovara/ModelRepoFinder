@@ -4,7 +4,7 @@ cd /d "%~dp0"
 set PYTHONUNBUFFERED=1
 
 echo.
-echo  ModelRepoFinder v1.3
+echo  ModelRepoFinder v1.4
 echo  ====================
 echo.
 
@@ -39,6 +39,7 @@ if not defined PY (
   exit /b 1
 )
 
+set "NEED=0"
 if not exist ".venv\Scripts\python.exe" (
   echo  First run: setting up a private toolkit folder. This can take a minute...
   %PY% -m venv .venv
@@ -51,19 +52,32 @@ if not exist ".venv\Scripts\python.exe" (
     pause
     exit /b 1
   )
+  set "NEED=1"
 )
 
 set "VPY=.venv\Scripts\python.exe"
-"%VPY%" -m pip install --upgrade pip >nul 2>&1
-echo  Making sure the helper libraries are ready...
-"%VPY%" -m pip install -r requirements.txt
-if errorlevel 1 (
-  echo.
-  echo  Could not install the helper libraries. Please check your internet
-  echo  connection and run this file again.
-  echo.
-  pause
-  exit /b 1
+if "%NEED%"=="0" (
+  "%VPY%" -c "import hashlib,pathlib,sys; lock=pathlib.Path('requirements.lock'); stamp=pathlib.Path('.venv/.requirements.sha256'); sys.exit(0 if lock.exists() and stamp.exists() and stamp.read_text(encoding='utf-8').strip()==hashlib.sha256(lock.read_bytes()).hexdigest() else 1)"
+  if errorlevel 1 set "NEED=1"
+)
+
+if "%NEED%"=="1" (
+  echo  Making sure the helper libraries are ready...
+  "%VPY%" -m pip install --upgrade pip >nul 2>&1
+  if exist requirements.lock (
+    "%VPY%" -m pip install -r requirements.lock
+  ) else (
+    "%VPY%" -m pip install -r requirements.txt
+  )
+  if errorlevel 1 (
+    echo.
+    echo  Could not install the helper libraries. Please check your internet
+    echo  connection and run this file again.
+    echo.
+    pause
+    exit /b 1
+  )
+  "%VPY%" -c "import hashlib,pathlib; lock=pathlib.Path('requirements.lock'); stamp=pathlib.Path('.venv/.requirements.sha256'); stamp.write_text(hashlib.sha256(lock.read_bytes()).hexdigest()+chr(10), encoding='utf-8') if lock.exists() else None"
 )
 
 echo.

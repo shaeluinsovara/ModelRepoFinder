@@ -6,7 +6,7 @@ cd "$(dirname "$0")" || exit 1
 export PYTHONUNBUFFERED=1
 
 echo
-echo "  ModelRepoFinder v1.3"
+echo "  ModelRepoFinder v1.4"
 echo "  ======================"
 echo
 
@@ -40,6 +40,27 @@ find_python() {
   return 1
 }
 
+lock_is_current() {
+  "$VPY" -c 'import hashlib, pathlib, sys
+lock = pathlib.Path("requirements.lock")
+stamp = pathlib.Path(".venv/.requirements.sha256")
+if not lock.exists():
+    sys.exit(1)
+wanted = hashlib.sha256(lock.read_bytes()).hexdigest()
+current = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else ""
+sys.exit(0 if current == wanted else 1)
+'
+}
+
+write_lock_stamp() {
+  "$VPY" -c 'import hashlib, pathlib
+lock = pathlib.Path("requirements.lock")
+stamp = pathlib.Path(".venv/.requirements.sha256")
+if lock.exists():
+    stamp.write_text(hashlib.sha256(lock.read_bytes()).hexdigest() + "\n", encoding="utf-8")
+'
+}
+
 PY="$(find_python)" || true
 if [[ -z "${PY}" ]]; then
   echo "  Python 3.9 or newer was not found on this Mac."
@@ -49,6 +70,7 @@ if [[ -z "${PY}" ]]; then
   exit 1
 fi
 
+need_install=0
 if [[ ! -x ".venv/bin/python" ]]; then
   echo "  First run: setting up a private toolkit folder. This can take a minute..."
   if ! "$PY" -m venv .venv; then
@@ -59,17 +81,31 @@ if [[ ! -x ".venv/bin/python" ]]; then
     pause_close
     exit 1
   fi
+  need_install=1
 fi
 
 VPY=".venv/bin/python"
-"$VPY" -m pip install --upgrade pip >/dev/null 2>&1 || true
-echo "  Making sure the helper libraries are ready..."
-if ! "$VPY" -m pip install -r requirements.txt; then
-  echo
-  echo "  Could not install the helper libraries. Please check your internet"
-  echo "  connection and run this file again."
-  pause_close
-  exit 1
+if [[ "$need_install" -eq 0 ]]; then
+  if ! lock_is_current; then
+    need_install=1
+  fi
+fi
+
+if [[ "$need_install" -eq 1 ]]; then
+  echo "  Making sure the helper libraries are ready..."
+  "$VPY" -m pip install --upgrade pip >/dev/null 2>&1 || true
+  req="requirements.lock"
+  if [[ ! -f "$req" ]]; then
+    req="requirements.txt"
+  fi
+  if ! "$VPY" -m pip install -r "$req"; then
+    echo
+    echo "  Could not install the helper libraries. Please check your internet"
+    echo "  connection and run this file again."
+    pause_close
+    exit 1
+  fi
+  write_lock_stamp
 fi
 
 echo

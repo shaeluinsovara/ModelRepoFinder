@@ -1,2 +1,4 @@
-huggingface_hub>=0.26.0
+# Loose minimums. The launchers install the exact versions in
+# requirements.lock so a given release does not change out from under you.
+huggingface_hub>=0.26.0,<1
 pyyaml>=6.0

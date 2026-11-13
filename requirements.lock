@@ -1,0 +1,19 @@
+# Pinned, tested dependency set for ModelRepoFinder v1.4.
+# These versions were chosen so a single lock file works on Python 3.9
+# through 3.13. huggingface_hub 0.36.2 is the last release that still
+# supports Python 3.9; later 1.x / 2.x releases need 3.10+.
+# The launchers install from this file only when the toolkit folder is
+# new or this file has changed.
+certifi==2026.10.23
+charset-normalizer==3.5.2
+filelock==3.19.1
+fsspec==2025.10.0
+hf-xet==1.8.0
+huggingface_hub==0.36.2
+idna==3.20
+packaging==26.3
+PyYAML==6.0.3
+requests==2.32.5
+tqdm==4.70.1
+typing_extensions==4.16.0
+urllib3==2.6.3
