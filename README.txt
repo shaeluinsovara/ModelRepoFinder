@@ -1,4 +1,4 @@
-ModelRepoFinder  v1.3
+ModelRepoFinder  v1.4
 =====================
 
 This little app looks up open-source AI models on Hugging Face, and
@@ -8,6 +8,34 @@ the ones you approve. Nothing is downloaded until you say so.
 
 The same folder works on Windows and on a Mac. A longer README.md is
 also in this folder (and on GitHub) if you prefer that format.
+
+
+What is new in v1.4
+-------------------
+  • This is a hardening release. The app's job is the same; several
+    safety checks and wording fixes were added before wider use.
+  • Category names from the browser are checked before anything is
+    written. Odd values such as slashes or ".." are refused.
+  • The local page now uses a one-time token, and the service checks
+    that requests really come from this computer. A web page from
+    somewhere else should not be able to poke at the downloader.
+  • Whole-folder model downloads keep each model's license and README
+    next to the weights. (They still skip the .git folder.)
+  • If a model ships a companion file (mmproj, projector, CLIP, or a
+    vision-encoder) the app offers it with the recommended GGUF file
+    and downloads it too, by default. Vision models usually need that
+    file to work. Ordinary text models are unchanged.
+  • The interface now shows on-disk size and a rough estimate of the
+    memory needed to run a model, as two different numbers. The size
+    cap is a first approximation, not a guarantee.
+  • If a GitHub project is fetched as a zip (when git is not
+    installed), every file in the zip is checked so it cannot land
+    outside the intended folder.
+  • Optional tokens on Windows are limited to your user account when
+    the system allows it. On a Mac they already were.
+  • Helper libraries are pinned to exact versions, so this release
+    should behave the same the next time you start it.
+  • A test suite is included (see README.md for how to run it).
 
 
 What is new in v1.3
@@ -204,8 +232,10 @@ each Hugging Face refresh, if you like a written copy.
 A few gentle rules already built in
 -----------------------------------
   • Preview (dry-run) is the default. Nothing downloads without a click.
-  • Sidecar files such as mmproj, projector, or clip are skipped; they
-    are not a full model on their own.
+  • If a model ships a companion file such as mmproj, projector, or
+    clip, that file is offered and downloaded with the model, because
+    vision and other multimodal models usually need it. It is not
+    treated as a model on its own.
   • The app prefers mid-size quality settings (Q4_K_M, Q5_K_M, and similar)
     around 70% of each computer's size cap, so there is room to breathe.
   • Background / reasoning models have an extra smaller cap, so they stay

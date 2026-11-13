@@ -4,7 +4,7 @@ A small local app that helps you find open-source AI models on [Hugging Face](ht
 
 Nothing is downloaded until you say so. The same folder works on Windows and macOS.
 
-This is **v1.3**.
+This is **v1.4**, a hardening release of v1.3. There are no new features, only tighter safety checks, clearer wording, and tests.
 
 ## Screenshots
 
@@ -27,7 +27,7 @@ The GitHub tab.
 - A web browser (the app opens a page at `http://127.0.0.1:8765/`)
 - Optional: [git](https://git-scm.com), so GitHub downloads can be cloned and later updated with `git pull`. If git is not installed, the app downloads a zip of the default branch instead.
 
-The first time you start the app, it creates a private toolkit folder (`.venv`) next to itself and installs `huggingface_hub` and `pyyaml`. That can take a minute.
+The first time you start the app, it creates a private toolkit folder (`.venv`) next to itself and installs a pinned set of helper libraries from `requirements.lock`. That can take a minute. Later starts only reinstall if that lock file has changed, so this release should keep behaving the same.
 
 ## Quick start on Windows
 
@@ -62,14 +62,18 @@ If Python is missing, install Python 3.9+ from [python.org](https://www.python.o
 - **Resilient downloads.** If a Hugging Face download hits a brief network hiccup, the app retries automatically (up to four times) and picks up what was already saved when it can. You will see a line like `Connection hiccup, retrying (2/4)…`. If Hugging Face’s faster downloader keeps erroring, the app switches to a simpler method. If something still fails, click **Retry failed**. One failure in a batch does not stop the others. You do not need to close the app and start over.
 - **Retire never deletes.** Retire moves a downloaded model or repo into a `retired/` folder so you can get it back if you change your mind.
 
-A few other built-in habits: preview is the default; sidecar files such as `mmproj`, projector, or clip are skipped; mid-size GGUF quality settings around 70% of the computer’s size cap are preferred; and only as many items as each category’s “keep” count are suggested.
+A few other built-in habits: preview is the default; mid-size GGUF quality settings around 70% of the computer’s size cap are preferred; and only as many items as each category’s “keep” count are suggested.
+
+When a model is multimodal (it ships an `mmproj`, projector, CLIP, or vision-encoder file), the matching companion is offered with the recommended GGUF file and downloaded with it by default. Ordinary text models are unchanged. Whole-folder downloads keep each model’s license and README next to the weights.
+
+The interface shows **on-disk size** and a **rough estimate** of the memory needed to run a model, as two different numbers. The computer’s size cap is a helpful first approximation, not a guarantee — actual memory use also depends on context length and the app you run it in.
 
 ## Tokens (optional)
 
 You can use the app without any tokens.
 
-- A **Hugging Face token** is only needed for gated models. Open the model page in your browser, accept the license, then paste an access token from huggingface.co. It is saved only on this computer, in a hidden local file (`.hf_token`), and is sent only to Hugging Face.
-- A **GitHub token** is only needed if GitHub starts refusing searches (unauthenticated search is rate-limited). A personal access token (classic, public-repo read is enough) is saved only on this computer, in a hidden local file (`.github_token`), and is sent only to GitHub.
+- A **Hugging Face token** is only needed for gated models. Open the model page in your browser, accept the license, then paste an access token from huggingface.co. It is saved only on this computer (in a hidden local file, or in the system keychain if the optional `keyring` package is already installed), and is sent only to Hugging Face. The file is limited to your user account where the operating system allows it.
+- A **GitHub token** is only needed if GitHub starts refusing searches (unauthenticated search is rate-limited). A personal access token (classic, public-repo read is enough) is saved the same way as the Hugging Face token, and is sent only to GitHub.
 
 Neither file is included in this repository. Leave the boxes blank unless you need them.
 
@@ -101,6 +105,28 @@ You do not have to be a programmer to change those numbers. Downloads go under `
 Leave the command or Terminal window open and read the message. Check that you are online. If a Hugging Face download fails, wait for the automatic retries, then click **Retry failed** if that button appears. Close the window and start the app again only if it will not open, or if Retry failed does not help.
 
 A plain-language copy of these instructions also lives in `README.txt`, next to the launchers.
+
+## What changed in v1.4
+
+v1.4 is a hardening release. In brief:
+
+- Category names and download folders are checked so a request cannot write outside the intended directory.
+- The local service checks `Host` and `Origin`, limits request size, and requires a per-launch token from its own page, so a web page from somewhere else should not be able to poke at it.
+- Whole-folder model downloads keep license files and README model cards (they still skip `.git`).
+- GitHub’s zip fallback checks every archive member before extracting.
+- Helper libraries are pinned in `requirements.lock`.
+- A test suite lives in `tests/`. See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
+## Running the tests
+
+From this folder, with Python 3.9 or newer:
+
+```bash
+python -m pip install -r requirements.lock
+python -m unittest discover -s tests -v
+```
+
+The tests use only the Python standard library plus the pinned helper libraries. They do not need a network connection. A GitHub Actions workflow (`.github/workflows/tests.yml`) runs the same suite on Ubuntu, Windows, and macOS, with Python 3.9 and 3.12.
 
 ## Disclaimer
 
