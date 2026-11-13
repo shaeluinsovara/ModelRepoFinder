@@ -32,7 +32,7 @@ class V15ApiTests(unittest.TestCase):
     def test_info_includes_v15_fields(self):
         status, data, _ = helpers.http_request(self.port, "GET", "/api/info")
         self.assertEqual(status, 200)
-        self.assertEqual(data.get("version"), "1.5")
+        self.assertEqual(data.get("version"), "1.6")
         self.assertEqual(data.get("app"), "ModelRepoFinder")
         self.assertIn("local_models", data)
         self.assertIn("hf_sorts", data)
@@ -195,7 +195,7 @@ class V15ApiTests(unittest.TestCase):
         status, _, raw = helpers.http_request(self.port, "GET", "/")
         self.assertEqual(status, 200)
         html = raw.decode("utf-8")
-        self.assertIn("v1.5", html)
+        self.assertIn("v1.6", html)
         self.assertIn(self.token, html)
         self.assertIn("Top picks", html)
         self.assertIn("Already on this computer", html)
