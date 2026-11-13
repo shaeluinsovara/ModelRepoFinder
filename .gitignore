@@ -28,5 +28,6 @@ Thumbs.db
 .vscode/
 *.swp
 
-# Local 'already shown' suggestion lists
+# Local 'already shown' suggestion lists and schedule state
 .mrf_seen.json
+.mrf_schedule.json

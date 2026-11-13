@@ -46,7 +46,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 HF_TOKEN_FILE = ROOT / ".hf_token"
-VERSION = "1.5"
+VERSION = "1.6"
 SNAPSHOT_IGNORE_DEFAULT = [".git*"]
 USER_AGENT = f"model-repo-finder/{VERSION}"
 HF = HfApi(headers={"User-Agent": USER_AGENT})
@@ -1007,6 +1007,8 @@ def collect_suggestions(
     already_ids: set[str] | None = None,
     seen_path: Path | None = None,
     record_seen: bool = True,
+    keep_override: int | None = None,
+    cap_override: float | None = None,
 ) -> dict:
     """Build a shortlist for one machine, only for the chosen categories.
 
@@ -1022,6 +1024,8 @@ def collect_suggestions(
     machine = machines[machine_key]
     formats = [f.lower() for f in (machine.get("formats") or ["gguf"])]
     cap = float(machine.get("max_model_gb") or 0)
+    if cap_override is not None:
+        cap = float(cap_override)
     tags = all_hf_tags(cfg)
     selected = categories if categories is not None else list(machine.get("hf_categories") or tags.keys())
     selected = [k for k in selected if k in tags]
@@ -1049,6 +1053,7 @@ def collect_suggestions(
                 exclude_ids=exclude,
                 seen_path=seen_path,
                 record_seen=record_seen,
+                keep_override=keep_override,
             )
         )
 
@@ -1077,11 +1082,14 @@ def _collect_one_tag(
     exclude_ids: set[str] | None = None,
     seen_path: Path | None = None,
     record_seen: bool = True,
+    keep_override: int | None = None,
 ) -> dict:
     import seen_store
 
     display = tag_cfg.get("name") or tag_name
     keep = int(tag_cfg.get("keep") or 1)
+    if keep_override is not None:
+        keep = max(keep, int(keep_override))
     cap_this = cap
     if tag_cfg.get("cap_gb"):
         cap_this = min(cap_this, float(tag_cfg["cap_gb"]))
