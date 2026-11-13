@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import helpers  # noqa: F401
 import local_scan
@@ -173,6 +174,24 @@ class PathSafetyTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     local_scan.validate_scan_folder(bad)
+
+    def test_macos_realpath_etc_is_rejected(self):
+        # On macOS, /etc is a symlink to /private/etc. The denylist has to
+        # catch the path as typed and the folder realpath returns.
+        real = os.path.realpath
+
+        def mapped(path, *args, **kwargs):
+            text = str(path).replace("\\", "/").rstrip("/")
+            if text == "/etc":
+                return "/private/etc"
+            return real(path, *args, **kwargs)
+
+        with patch("local_scan.os.path.realpath", side_effect=mapped) as mocked:
+            with self.assertRaises(ValueError):
+                local_scan.validate_scan_folder("/etc")
+        self.assertTrue(mocked.called)
+        with self.assertRaises(ValueError):
+            local_scan.validate_scan_folder("/private/etc")
 
     def test_rejects_missing_and_nul(self):
         with self.assertRaises(ValueError):

@@ -4,7 +4,7 @@ A small local app that helps you find open-source AI models on [Hugging Face](ht
 
 Nothing is downloaded until you say so. The same folder works on Windows and macOS.
 
-This is **v1.6**. It keeps every v1.4 safety check and the v1.5 finder features, and adds a scheduled auto-scan that can download matching models and tidy out-of-date ones while the app is open.
+This is **v1.6.1**. It keeps every v1.4 safety check and the v1.5 finder features, and adds a scheduled auto-scan that can download matching models and tidy out-of-date ones while the app is open. v1.6.1 fixes a Mac bug that could allow the system folder `/etc` to be scanned.
 
 ## Screenshots
 
@@ -108,6 +108,10 @@ You do not have to be a programmer to change those numbers. Downloads go under `
 Leave the command or Terminal window open and read the message. Check that you are online. If a Hugging Face download fails, wait for the automatic retries, then click **Retry failed** if that button appears. Close the window and start the app again only if it will not open, or if Retry failed does not help.
 
 A plain-language copy of these instructions also lives in `README.txt`, next to the launchers.
+
+## What changed in v1.6.1
+
+On a Mac, `/etc` is a shortcut to `/private/etc`. The scan-folder check now looks at both the path you typed and the real folder it points to, so system locations such as `/etc` are still refused. Folders you add under your home directory are unchanged. Linux and Windows checks are unchanged.
 
 ## What changed in v1.6
 

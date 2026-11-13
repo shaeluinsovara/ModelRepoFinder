@@ -6,8 +6,8 @@ cd "$(dirname "$0")" || exit 1
 export PYTHONUNBUFFERED=1
 
 echo
-echo "  ModelRepoFinder v1.6"
-echo "  ======================"
+echo "  ModelRepoFinder v1.6.1"
+echo "  ========================"
 echo
 
 pause_close() {

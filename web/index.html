@@ -315,7 +315,7 @@
 </head>
 <body>
   <header>
-    <h1>ModelRepoFinder <span class="ver" id="version-label">v1.6</span></h1>
+    <h1>ModelRepoFinder <span class="ver" id="version-label">v1.6.1</span></h1>
     <p class="tagline">Find open-source models and GitHub projects that fit your house, then download only the ones you approve. Nothing leaves this computer except requests to Hugging Face or GitHub.</p>
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tab-hf" aria-selected="true" aria-controls="pane-hf">Hugging Face models</button>
@@ -2246,7 +2246,7 @@
         (async function init() {
       try {
         info = await api("/api/info");
-        $("version-label").textContent = "v" + (info.version || "1.6");
+        $("version-label").textContent = "v" + (info.version || "1.6.1");
         fillMachines(info.machine || info.suggested_machine);
         $("base-folder").value = info.base_folder || "";
         $("path-hint").textContent = (info.base_folder || ".") + "/incoming/<computer>/<tag>/";

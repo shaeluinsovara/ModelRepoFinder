@@ -66,6 +66,14 @@ REJECT_ROOT_NAMES = {
     "/sbin",
     "/lib",
     "/lib64",
+    # macOS shortcuts: /etc, /tmp, and /var are symlinks into /private.
+    # Compare both the path as typed and the realpath result.
+    "/private/etc",
+    "/private/var",
+    "/private/tmp",
+    "/system",
+    "/library",
+    "/applications",
     "/windows",
     "c:\\windows",
     "c:\\windows\\system32",
@@ -185,26 +193,47 @@ def contained(path: Path, root: Path) -> bool:
     return resolved == root_res or root_res in resolved.parents
 
 
-def _is_rejected_root(path: Path) -> bool:
-    try:
-        resolved = path.expanduser().resolve()
-    except (OSError, RuntimeError, ValueError):
+def _matches_system_root_name(value: str) -> bool:
+    """True when this exact path string is a listed system root.
+
+    The candidate is compared both as typed (after slash cleanup) and in the
+    forms stored in REJECT_ROOT_NAMES. Callers also pass os.path.realpath so
+    a macOS shortcut such as /etc -> /private/etc is caught.
+    """
+    text = str(value).replace("\\", "/").rstrip("/").lower()
+    raw = str(value).replace("\\", "/").lower()
+    slash_forms = {item if str(item).endswith("/") else str(item) + "/" for item in REJECT_ROOT_NAMES}
+    if raw in REJECT_ROOT_NAMES or (text + "/") in slash_forms:
         return True
-    text = str(resolved).replace("\\", "/").rstrip("/").lower()
-    # Drive roots like "C:\" become "C:" after rstrip of "/"; also check as-is.
-    raw = str(resolved).replace("\\", "/").lower()
-    if raw in REJECT_ROOT_NAMES or (text + "/") in {r if r.endswith("/") else r + "/" for r in REJECT_ROOT_NAMES}:
+    if text in {str(item).rstrip("/") for item in REJECT_ROOT_NAMES}:
         return True
-    if text in {r.rstrip("/") for r in REJECT_ROOT_NAMES}:
-        return True
+    return False
+
+
+def _is_filesystem_root(path: Path) -> bool:
     # A path that is only a filesystem root (/, C:\) is too broad.
-    parts = resolved.parts
+    parts = path.parts
     if len(parts) <= 1:
         return True
     # Windows drive root: ('C:\\',) or ('C:', '\\') depending on Python.
     if len(parts) == 1 or (len(parts) == 2 and parts[1] in {"\\", "/", ""}):
         return True
     return False
+
+
+def _is_rejected_root(path: Path) -> bool:
+    """True if the typed path or its real path is a system root.
+
+    Both are checked. On macOS, /etc is a symlink to /private/etc, so looking
+    only at the resolved path used to miss the /etc denylist entry.
+    """
+    try:
+        resolved_text = os.path.realpath(path)
+    except (OSError, RuntimeError, ValueError):
+        return True
+    if _matches_system_root_name(os.fspath(path)) or _matches_system_root_name(resolved_text):
+        return True
+    return _is_filesystem_root(Path(resolved_text))
 
 
 def validate_scan_folder(path_str: str) -> Path:
@@ -218,16 +247,18 @@ def validate_scan_folder(path_str: str) -> Path:
         raise ValueError("That folder path is too long.")
     path = Path(raw).expanduser()
     try:
-        path = path.resolve()
+        # realpath follows the macOS shortcuts (/etc -> /private/etc).
+        # _is_rejected_root compares both this typed path and that result.
+        resolved = Path(os.path.realpath(path))
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError(f"Could not use that folder: {exc}") from exc
     if _is_rejected_root(path):
         raise ValueError("That folder is too broad or is a system location, so it will not be scanned.")
-    if not path.exists() or not path.is_dir():
+    if not resolved.exists() or not resolved.is_dir():
         raise ValueError("That folder does not exist or is not a directory.")
-    if not os.access(path, os.R_OK):
+    if not os.access(resolved, os.R_OK):
         raise ValueError("That folder cannot be read.")
-    return path
+    return resolved
 
 
 def add_scan_folder(cfg: dict, path_str: str) -> Path:

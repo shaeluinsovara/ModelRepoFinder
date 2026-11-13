@@ -4,8 +4,8 @@ cd /d "%~dp0"
 set PYTHONUNBUFFERED=1
 
 echo.
-echo  ModelRepoFinder v1.6
-echo  ====================
+echo  ModelRepoFinder v1.6.1
+echo  ======================
 echo.
 
 set "PY="

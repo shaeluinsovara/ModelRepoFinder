@@ -1,5 +1,5 @@
-ModelRepoFinder  v1.6
-=====================
+ModelRepoFinder  v1.6.1
+=======================
 
 This little app looks up open-source AI models on Hugging Face, and
 open-source projects on GitHub, that should fit the computer you pick.
@@ -9,6 +9,14 @@ the ones you approve. Nothing is downloaded until you say so.
 The same folder works on Windows and on a Mac. A longer README.md is
 also in this folder (and on GitHub) if you prefer that format.
 
+
+
+What is new in v1.6.1
+---------------------
+  • On a Mac, /etc is a shortcut to /private/etc. The app now checks both
+    the folder path you typed and the real folder it points to, so system
+    locations such as /etc are still refused. Folders under your home
+    directory are unchanged. Linux and Windows behave as before.
 
 
 What is new in v1.6

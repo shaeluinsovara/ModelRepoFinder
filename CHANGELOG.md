@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.1 — Mac scan-folder check
+
+A small fix on top of v1.6.
+
+- **System folders stay off the scan list on a Mac.** `/etc` on macOS is a shortcut to `/private/etc`. The app now checks both the path you typed and the real folder it points to, and it knows the Mac locations those shortcuts open (`/private/etc`, `/private/var`, `/private/tmp`, and system roots such as `/System`, `/Library`, and `/Applications`). A folder you add under your home directory is unchanged. Linux and Windows behave as before.
+
 ## v1.6 — scheduled auto-scan
 
 A features release on top of the v1.5 finder and the v1.4 hardening. Every v1.4 safety check is still in place.
