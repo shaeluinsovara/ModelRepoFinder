@@ -46,7 +46,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 HF_TOKEN_FILE = ROOT / ".hf_token"
-VERSION = "1.4"
+VERSION = "1.5"
 SNAPSHOT_IGNORE_DEFAULT = [".git*"]
 USER_AGENT = f"model-repo-finder/{VERSION}"
 HF = HfApi(headers={"User-Agent": USER_AGENT})
@@ -388,7 +388,7 @@ def companion_role(path: str) -> str | None:
 
 
 # Extra destination buckets the UI may send that are not in machines.yaml.
-SPECIAL_HF_CATEGORIES = frozenset({"manual", "misc"})
+SPECIAL_HF_CATEGORIES = frozenset({"manual", "misc", "top_picks"})
 SPECIAL_GH_CATEGORIES = frozenset({"misc"})
 
 
@@ -605,49 +605,196 @@ def _retry(fn, tries: int = 3, delay: float = 1.5):
     raise last  # pragma: no cover
 
 
+
+# Hugging Face list_models sort keys. "trending" uses trendingScore when the
+# API accepts it (confirmed against the public API in November 2026) and
+# falls back to likes if a given server rejects it. "newest" uses lastModified.
+HF_SORTS = {
+    "downloads": "downloads",
+    "likes": "likes",
+    "trending": "trendingScore",
+    "newest": "lastModified",
+}
+HF_SORT_ALIASES = {
+    "download": "downloads",
+    "downloads": "downloads",
+    "most_downloaded": "downloads",
+    "most-downloaded": "downloads",
+    "like": "likes",
+    "likes": "likes",
+    "most_liked": "likes",
+    "most-liked": "likes",
+    "trending": "trending",
+    "trendingscore": "trending",
+    "trending_score": "trending",
+    "trending-score": "trending",
+    "newest": "newest",
+    "new": "newest",
+    "lastmodified": "newest",
+    "last_modified": "newest",
+    "last-modified": "newest",
+    "created": "newest",
+    "createdat": "newest",
+    "created_at": "newest",
+    "created-at": "newest",
+}
+# None = not yet tried, True/False after the first trendingScore call.
+_HF_TRENDING_OK: bool | None = None
+_HF_SORT_FALLBACK: str | None = None
+
+POPULARITY_DISCLAIMER = (
+    "These are the models Hugging Face users have downloaded, liked, or that "
+    "are trending right now, limited to ones that should fit this computer. "
+    "Popularity is a community signal, not a guarantee of quality."
+)
+
+
+def normalize_hf_sort(sort: str | None) -> str:
+    key = (sort or "downloads").strip().lower().replace(" ", "_")
+    return HF_SORT_ALIASES.get(key, "downloads")
+
+
+def hf_api_sort(sort_key: str) -> str:
+    return HF_SORTS.get(sort_key, "downloads")
+
+
+def reset_hf_sort_state() -> None:
+    """Clear the trending-support cache. Used by tests."""
+    global _HF_TRENDING_OK, _HF_SORT_FALLBACK
+    _HF_TRENDING_OK = None
+    _HF_SORT_FALLBACK = None
+
+
+def _date_value(text: str | None) -> str:
+    return (text or "").strip()
+
+
+def sort_model_key(sort_key: str):
+    """Return a key function for sorting model dicts (lower is better when used with default sort? No — we sort reverse via negative numbers)."""
+
+    def _key(item: dict):
+        if sort_key == "likes":
+            return (-(item.get("likes") or 0), -(item.get("downloads") or 0), item.get("id") or "")
+        if sort_key == "trending":
+            return (
+                -(item.get("trending_score") or 0),
+                -(item.get("likes") or 0),
+                -(item.get("downloads") or 0),
+                item.get("id") or "",
+            )
+        if sort_key == "newest":
+            return (
+                _date_value(item.get("lastModified") or item.get("createdAt")),
+                -(item.get("downloads") or 0),
+                item.get("id") or "",
+            )
+        return (-(item.get("downloads") or 0), -(item.get("likes") or 0), item.get("id") or "")
+
+    return _key
+
+
+def sort_models(models: list[dict], sort_key: str) -> list[dict]:
+    if sort_key == "newest":
+        # ISO dates sort lexicographically; reverse so the newest is first.
+        # Downloads stay as a tie-breaker with ordinary descending order.
+        return sorted(
+            models,
+            key=lambda item: (
+                _date_value(item.get("lastModified") or item.get("createdAt")),
+                item.get("downloads") or 0,
+                item.get("id") or "",
+            ),
+            reverse=True,
+        )
+    return sorted(models, key=sort_model_key(sort_key))
+
+
 def search_models(
     query: str,
     limit: int = 40,
     pipeline_tag: str | None = None,
     gguf_only: bool = False,
     author: str | None = None,
+    sort: str | None = "downloads",
+    library: str | None = None,
 ) -> list[dict]:
-    def _call():
+    """Search (or list) Hugging Face models. An empty query lists by sort only."""
+    global _HF_TRENDING_OK, _HF_SORT_FALLBACK
+    sort_key = normalize_hf_sort(sort)
+    api_sort = hf_api_sort(sort_key)
+    if sort_key == "trending" and _HF_TRENDING_OK is False:
+        api_sort = "likes"
+        _HF_SORT_FALLBACK = "likes"
+    limit = max(1, min(int(limit or 40), 150))
+
+    def _call(use_sort: str):
         kwargs: dict[str, Any] = {
-            "search": query,
             "limit": limit,
-            "sort": "downloads",
+            "sort": use_sort,
         }
+        if query:
+            kwargs["search"] = query
         if gguf_only:
             kwargs["filter"] = "gguf"
+        if library:
+            kwargs["library"] = library
         if pipeline_tag:
             kwargs["pipeline_tag"] = pipeline_tag
         if author:
             kwargs["author"] = author
         return list(HF.list_models(**kwargs))
 
-    models = _retry(_call)
-    return [_model_brief(m) for m in models]
+    def _attempt():
+        global _HF_TRENDING_OK, _HF_SORT_FALLBACK
+        try:
+            models = _call(api_sort)
+            if api_sort == "trendingScore":
+                _HF_TRENDING_OK = True
+                _HF_SORT_FALLBACK = None
+            return models
+        except Exception as exc:  # noqa: BLE001
+            if api_sort == "trendingScore":
+                _HF_TRENDING_OK = False
+                _HF_SORT_FALLBACK = "likes"
+                return _call("likes")
+            raise exc
+
+    models = _retry(_attempt)
+    briefs = [_model_brief(m) for m in models]
+    # The API already ordered them; re-sort locally so a merged pool stays consistent.
+    return sort_models(briefs, sort_key)
 
 
 def search_gguf_models(
-    query: str, limit: int = 40, pipeline_tag: str | None = None
+    query: str,
+    limit: int = 40,
+    pipeline_tag: str | None = None,
+    sort: str | None = "downloads",
 ) -> list[dict]:
-    return search_models(query, limit=limit, pipeline_tag=pipeline_tag, gguf_only=True)
+    return search_models(query, limit=limit, pipeline_tag=pipeline_tag, gguf_only=True, sort=sort)
 
 
-def search_mlx_models(query: str, limit: int = 40) -> list[dict]:
-    return search_models(query, limit=limit, author="mlx-community")
+def search_mlx_models(
+    query: str, limit: int = 40, sort: str | None = "downloads"
+) -> list[dict]:
+    return search_models(query, limit=limit, author="mlx-community", sort=sort)
 
 
 def _model_brief(m: Any) -> dict:
     mid = getattr(m, "id", None) or ""
     tags = list(getattr(m, "tags", None) or [])
+    trending = getattr(m, "trending_score", None)
+    if trending is None:
+        trending = getattr(m, "trendingScore", None) or 0
+    last_mod = getattr(m, "last_modified", None) or getattr(m, "lastModified", None) or ""
+    created = getattr(m, "created_at", None) or getattr(m, "createdAt", None) or ""
     return {
         "id": mid,
         "downloads": getattr(m, "downloads", None) or 0,
         "likes": getattr(m, "likes", None) or 0,
-        "lastModified": str(getattr(m, "last_modified", None) or ""),
+        "trending_score": trending or 0,
+        "lastModified": str(last_mod or ""),
+        "createdAt": str(created or ""),
         "card_url": f"https://huggingface.co/{mid}",
         "tags": tags,
         "pipeline_tag": getattr(m, "pipeline_tag", None) or "",
@@ -853,10 +1000,22 @@ def collect_suggestions(
     cfg: dict,
     machine_key: str,
     progress_cb: ProgressCb | None = None,
-    search_limit: int = 40,
+    search_limit: int = 80,
     categories: list[str] | None = None,
+    *,
+    sort: str | None = "downloads",
+    already_ids: set[str] | None = None,
+    seen_path: Path | None = None,
+    record_seen: bool = True,
 ) -> dict:
-    """Build a shortlist for one machine, only for the chosen categories."""
+    """Build a shortlist for one machine, only for the chosen categories.
+
+    Each call returns the next fresh batch: models already shown (or already
+    on this computer / already approved) are skipped, and a larger search
+    pool is used so Refresh has something new to offer.
+    """
+    import seen_store
+
     machines = enabled_machines(cfg)
     if machine_key not in machines:
         raise ValueError(f"Unknown or disabled machine: {machine_key}")
@@ -867,10 +1026,11 @@ def collect_suggestions(
     selected = categories if categories is not None else list(machine.get("hf_categories") or tags.keys())
     selected = [k for k in selected if k in tags]
     allow = set(cfg.get("allow_list") or [])
-
-    def note(msg: str) -> None:
-        if progress_cb:
-            progress_cb(msg)
+    exclude = set(already_ids or set()) | {a.lower() for a in allow}
+    # Keep original-case allow ids too so comparisons can be exact or lowercased.
+    exclude |= set(allow)
+    sort_key = normalize_hf_sort(sort)
+    search_limit = max(10, min(int(search_limit or 80), 150))
 
     result_tags = []
     for tag_name in selected:
@@ -884,6 +1044,11 @@ def collect_suggestions(
                 allow=allow,
                 search_limit=search_limit,
                 progress_cb=progress_cb,
+                sort=sort_key,
+                machine_key=machine_key,
+                exclude_ids=exclude,
+                seen_path=seen_path,
+                record_seen=record_seen,
             )
         )
 
@@ -892,6 +1057,8 @@ def collect_suggestions(
         "machine_name": machine.get("name") or machine_key,
         "max_model_gb": cap,
         "formats": formats,
+        "sort": sort_key,
+        "sort_fallback": _HF_SORT_FALLBACK,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "tags": result_tags,
     }
@@ -905,7 +1072,14 @@ def _collect_one_tag(
     allow: set[str],
     search_limit: int,
     progress_cb: ProgressCb | None,
+    sort: str = "downloads",
+    machine_key: str = "",
+    exclude_ids: set[str] | None = None,
+    seen_path: Path | None = None,
+    record_seen: bool = True,
 ) -> dict:
+    import seen_store
+
     display = tag_cfg.get("name") or tag_name
     keep = int(tag_cfg.get("keep") or 1)
     cap_this = cap
@@ -913,7 +1087,7 @@ def _collect_one_tag(
         cap_this = min(cap_this, float(tag_cfg["cap_gb"]))
     pipeline_tag = tag_cfg.get("pipeline_tag")
     use_pt = bool(tag_cfg.get("use_pipeline_tag"))
-    exclude_ids = list(tag_cfg.get("exclude_id_substrings") or [])
+    blocked = list(tag_cfg.get("exclude_id_substrings") or [])
     allow_nongguf = bool(tag_cfg.get("allow_nongguf"))
     fuzzy = bool(tag_cfg.get("fuzzy_card"))
     keywords = list(tag_cfg.get("keywords") or [])
@@ -927,6 +1101,10 @@ def _collect_one_tag(
         "description": tag_cfg.get("description") or "",
         "models": [],
         "error": None,
+        "wrapped": False,
+        "skipped_seen": 0,
+        "skipped_already": 0,
+        "sort": sort,
     }
 
     def note(msg: str) -> None:
@@ -943,6 +1121,7 @@ def _collect_one_tag(
                     q,
                     limit=search_limit,
                     pipeline_tag=pipeline_tag if use_pt else None,
+                    sort=sort,
                 ):
                     merged.setdefault(m["id"], m)
             groups.append(("gguf", list(merged.values())))
@@ -955,6 +1134,7 @@ def _collect_one_tag(
                     limit=search_limit,
                     pipeline_tag=pipeline_tag if use_pt else None,
                     gguf_only=False,
+                    sort=sort,
                 ):
                     merged_any.setdefault(m["id"], m)
             groups.append(("any", list(merged_any.values())))
@@ -962,39 +1142,81 @@ def _collect_one_tag(
             merged_mlx: dict[str, dict] = {}
             for q in queries:
                 note(f"Searching mlx-community for {display} (“{q}”)…")
-                for m in search_mlx_models(q, limit=search_limit):
+                for m in search_mlx_models(q, limit=search_limit, sort=sort):
                     merged_mlx.setdefault(m["id"], m)
             groups.append(("mlx", list(merged_mlx.values())))
     except Exception as exc:  # noqa: BLE001
         tag_out["error"] = f"Search failed: {exc}"
         return tag_out
 
+    seen: list[str] = []
+    if machine_key:
+        try:
+            seen = seen_store.get_seen("hf", machine_key, tag_name, path=seen_path)
+        except ValueError:
+            seen = []
+
+    all_fits: list[dict] = []
     for fmt, models in groups:
         ranked = _rank_models(
             models=models,
             fmt=fmt,
             cap=cap_this,
-            keep=keep,
-            exclude_ids=exclude_ids,
+            keep=max(keep * 8, 16),  # inspect a larger fitting pool, then rotate
+            exclude_ids=blocked,
             allow=allow,
             tag_name=tag_name,
             keywords=keywords if fuzzy else [],
             fuzzy=fuzzy,
             progress_cb=progress_cb,
             display=display,
+            sort=sort,
+            already_ids=exclude_ids,
         )
-        # Avoid listing the same repo twice if it appeared as GGUF and as "any".
-        have = {m["id"] for m in tag_out["models"]}
+        have = {m["id"] for m in all_fits}
         for row in ranked:
             if row["id"] not in have:
-                tag_out["models"].append(row)
+                all_fits.append(row)
                 have.add(row["id"])
-    # After merging formats, keep the most downloaded `keep` (and keep a little
-    # extra room if GGUF and another format both fit — up to keep per format
-    # already applied, so trim to keep * number of groups, max keep*2).
-    tag_out["models"].sort(key=lambda x: (-(x.get("downloads") or 0), -(x.get("likes") or 0)))
-    max_keep = keep * max(1, len(groups))
-    tag_out["models"] = tag_out["models"][:max_keep]
+
+    all_fits = sort_models(all_fits, sort)
+    exclude_lower = {(e or "").lower() for e in (exclude_ids or set()) if e}
+    skipped_already = 0
+    # Count search hits we never inspected because they are already local or approved.
+    raw_ids = {m.get("id") for _, models in groups for m in models if m.get("id")}
+    skipped_already = sum(1 for i in raw_ids if i.lower() in exclude_lower)
+
+    max_keep = keep * max(1, min(len(groups), 2))
+    picked, meta = seen_store.pick_fresh(
+        all_fits,
+        id_of=lambda row: (row.get("id") or "").lower(),
+        seen={(s or "").lower() for s in seen},
+        exclude=exclude_lower,
+        keep=max_keep,
+    )
+    chosen = sort_models(picked, sort)
+
+    tag_out["models"] = chosen
+    tag_out["wrapped"] = bool(meta.get("wrapped"))
+    tag_out["skipped_seen"] = int(meta.get("skipped_seen") or 0)
+    tag_out["skipped_already"] = skipped_already + int(meta.get("skipped_already") or 0)
+    if tag_out["wrapped"]:
+        tag_out["wrap_note"] = (
+            "You've seen every current match in this category; starting the list over."
+        )
+
+    if record_seen and machine_key and chosen:
+        try:
+            seen_store.record_batch(
+                "hf",
+                machine_key,
+                tag_name,
+                [m["id"] for m in chosen],
+                wrapped=bool(meta.get("wrapped")),
+                path=seen_path,
+            )
+        except ValueError:
+            pass
     return tag_out
 
 
@@ -1010,34 +1232,39 @@ def _rank_models(
     fuzzy: bool,
     progress_cb: ProgressCb | None,
     display: str = "",
+    sort: str = "downloads",
+    already_ids: set[str] | None = None,
 ) -> list[dict]:
+    already = {a.lower() for a in (already_ids or set())}
     candidates = []
     for m in models:
         mid = m.get("id") or ""
         if not mid or id_blocked(mid, exclude_ids):
             continue
+        if mid.lower() in already:
+            continue
         if keywords and not matches_keywords(m, keywords):
-            # Leave a few for a card-text look later; drop obvious misses.
             if not fuzzy:
                 continue
             m = dict(m)
             m["_needs_card"] = True
         candidates.append(m)
 
-    # Prefer obvious keyword hits, then popularity.
-    candidates.sort(
-        key=lambda x: (
-            0 if x.get("_needs_card") else 1,
-            x.get("downloads") or 0,
-            x.get("likes") or 0,
-        ),
-        reverse=True,
-    )
-    # Cap how many repos we inspect so a category with several queries stays snappy.
-    inspect_cap = 40
-    needs_card = [m for m in candidates if m.get("_needs_card")]
+    # Prefer obvious keyword hits, then the requested sort.
+    def _pref(item: dict):
+        sort_k = sort_model_key(sort)(item)
+        # keyword misses (needs card) go after definite hits
+        flag = 1 if item.get("_needs_card") else 0
+        return (flag, sort_k)
+
+    reverse = sort == "newest"
+    # For newest, sort_model_key is a date string (ascending unless reverse).
+    # _pref puts flag first (0 before 1). Use a stable two-step:
     definite = [m for m in candidates if not m.get("_needs_card")]
-    # Give unmatched ones a second chance via the model card, but only a handful.
+    needs_card = [m for m in candidates if m.get("_needs_card")]
+    definite = sort_models(definite, sort)
+    needs_card = sort_models(needs_card, sort)
+    inspect_cap = 50
     extras = needs_card[:8]
     candidates = (definite + extras)[:inspect_cap]
 
@@ -1075,8 +1302,8 @@ def _rank_models(
                     if not repo or repo["size_gb"] > cap:
                         return None
                     pick = repo
-        except Exception as exc:  # noqa: BLE001
-            return None if "gated" in str(exc).lower() else None
+        except Exception:  # noqa: BLE001
+            return None
         if not pick:
             return None
         fmt_name, app_note = guess_format_and_note(m, pick)
@@ -1086,7 +1313,9 @@ def _rank_models(
             "id": mid,
             "downloads": m.get("downloads") or 0,
             "likes": m.get("likes") or 0,
+            "trending_score": m.get("trending_score") or 0,
             "lastModified": m.get("lastModified") or "",
+            "createdAt": m.get("createdAt") or "",
             "card_url": m.get("card_url") or f"https://huggingface.co/{mid}",
             "file": (
                 pick["path"].rsplit("/", 1)[-1]
@@ -1121,8 +1350,168 @@ def _rank_models(
                 continue
             picks.append(row)
 
-    picks.sort(key=lambda x: (-(x.get("downloads") or 0), -(x.get("likes") or 0)))
+    picks = sort_models(picks, sort)
     return picks[:keep]
+
+
+def collect_top_picks(
+    cfg: dict,
+    machine_key: str,
+    progress_cb: ProgressCb | None = None,
+    sort: str | None = "downloads",
+    categories: list[str] | None = None,
+    search_limit: int = 50,
+    keep: int = 8,
+    already_ids: set[str] | None = None,
+) -> dict:
+    """List popular Hugging Face models that should fit this computer.
+
+    This is a no-keyword view: models are ordered by community popularity
+    (downloads, likes, or trending) or by how recently they were updated,
+    then filtered by the computer's size cap and by GGUF / MLX where those
+    formats are what the computer runs. Pass category keys to also include
+    a shortlist for each one (using that category's pipeline tag or name
+    as a type filter, not as a keyword search when a pipeline tag exists).
+    """
+    machines = enabled_machines(cfg)
+    if machine_key not in machines:
+        raise ValueError(f"Unknown or disabled machine: {machine_key}")
+    machine = machines[machine_key]
+    formats = [f.lower() for f in (machine.get("formats") or ["gguf"])]
+    cap = float(machine.get("max_model_gb") or 0)
+    allow = set(cfg.get("allow_list") or [])
+    sort_key = normalize_hf_sort(sort)
+    search_limit = max(10, min(int(search_limit or 50), 150))
+    keep = max(1, min(int(keep or 8), 20))
+
+    def note(msg: str) -> None:
+        if progress_cb:
+            progress_cb(msg)
+
+    def _fits_for(models: list[dict], tag_name: str, display: str, how_many: int) -> list[dict]:
+        groups: list[tuple[str, list[dict]]] = []
+        if "gguf" in formats:
+            groups.append(("gguf", [m for m in models if _looks_gguf(m)]))
+            # If the list was already requested with filter=gguf, keep them all.
+            if not groups[-1][1] and models:
+                groups[-1] = ("gguf", list(models))
+        if "mlx" in formats:
+            mlx = [m for m in models if "mlx" in (m.get("id") or "").lower() or "mlx" in " ".join(m.get("tags") or []).lower()]
+            if mlx:
+                groups.append(("mlx", mlx))
+        # If we didn't classify, still try as GGUF when that's the machine format.
+        if not groups and "gguf" in formats:
+            groups.append(("gguf", list(models)))
+        elif not groups and formats:
+            groups.append(("any", list(models)))
+        collected: list[dict] = []
+        have: set[str] = set()
+        for fmt, group in groups:
+            ranked = _rank_models(
+                models=group,
+                fmt=fmt if fmt != "any" else "any",
+                cap=cap,
+                keep=how_many,
+                exclude_ids=[],
+                allow=allow,
+                tag_name=tag_name,
+                keywords=[],
+                fuzzy=False,
+                progress_cb=progress_cb,
+                display=display,
+                sort=sort_key,
+                already_ids=None,  # mark later; do not hide popular models already on disk
+            )
+            for row in ranked:
+                if row["id"] not in have:
+                    collected.append(row)
+                    have.add(row["id"])
+        return sort_models(collected, sort_key)[:how_many]
+
+    overall_models: list[dict] = []
+    try:
+        if "gguf" in formats:
+            note("Looking up popular GGUF models on Hugging Face…")
+            overall_models.extend(search_models("", limit=search_limit, gguf_only=True, sort=sort_key))
+        if "mlx" in formats:
+            note("Looking up popular MLX models…")
+            for m in search_mlx_models("", limit=search_limit, sort=sort_key):
+                if m["id"] not in {x["id"] for x in overall_models}:
+                    overall_models.append(m)
+        if not overall_models:
+            note("Looking up popular models on Hugging Face…")
+            overall_models = search_models("", limit=search_limit, sort=sort_key)
+    except Exception as exc:  # noqa: BLE001
+        overall_error = f"Search failed: {exc}"
+        overall = []
+    else:
+        overall_error = None
+        overall = _fits_for(overall_models, "top_picks", "Top picks", keep)
+
+    category_slots: list[dict] = []
+    tags = all_hf_tags(cfg)
+    selected = [k for k in (categories or []) if k in tags]
+    for tag_name in selected:
+        tag_cfg = tags[tag_name]
+        display = tag_cfg.get("name") or tag_name
+        pipeline_tag = tag_cfg.get("pipeline_tag") if tag_cfg.get("use_pipeline_tag") else None
+        # When the category has a pipeline tag we can use it as a type filter
+        # without keyword search. Otherwise we list popular GGUF models and
+        # rely on the pipeline_tag field when present, falling back to a
+        # single broad query so the section is not empty.
+        slot: dict[str, Any] = {
+            "name": tag_name,
+            "title": display,
+            "keep": min(int(tag_cfg.get("keep") or 2), keep),
+            "description": tag_cfg.get("description") or "",
+            "models": [],
+            "error": None,
+        }
+        try:
+            note(f"Looking up popular {display} models…")
+            found: dict[str, dict] = {}
+            if pipeline_tag:
+                for m in search_models(
+                    "",
+                    limit=search_limit,
+                    pipeline_tag=pipeline_tag,
+                    gguf_only="gguf" in formats,
+                    sort=sort_key,
+                ):
+                    found.setdefault(m["id"], m)
+            else:
+                # Use the first query only as a mild filter so "coding" top
+                # picks stay in the coding neighbourhood, still sorted by
+                # popularity rather than by keyword score.
+                queries = list(tag_cfg.get("hf_queries") or [tag_cfg.get("hf_search") or display])
+                q = queries[0] if queries else display
+                for m in search_gguf_models(q, limit=search_limit, sort=sort_key) if "gguf" in formats else search_models(q, limit=search_limit, sort=sort_key):
+                    found.setdefault(m["id"], m)
+            slot["models"] = _fits_for(list(found.values()), tag_name, display, slot["keep"])
+        except Exception as exc:  # noqa: BLE001
+            slot["error"] = f"Search failed: {exc}"
+        category_slots.append(slot)
+
+    return {
+        "machine": machine_key,
+        "machine_name": machine.get("name") or machine_key,
+        "max_model_gb": cap,
+        "formats": formats,
+        "sort": sort_key,
+        "sort_fallback": _HF_SORT_FALLBACK,
+        "disclaimer": POPULARITY_DISCLAIMER,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "overall": overall,
+        "overall_error": overall_error,
+        "tags": category_slots,
+        "mode": "top_picks",
+    }
+
+
+def _looks_gguf(model: dict) -> bool:
+    tags = [t.lower() for t in (model.get("tags") or [])]
+    ident = (model.get("id") or "").lower()
+    return "gguf" in tags or ident.endswith("-gguf") or "gguf" in ident
 
 
 class DownloadProgress(tqdm if tqdm is not None else object):  # type: ignore[valid-type]

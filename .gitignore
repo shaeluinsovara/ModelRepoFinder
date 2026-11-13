@@ -27,3 +27,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Local 'already shown' suggestion lists
+.mrf_seen.json

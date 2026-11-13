@@ -7,6 +7,7 @@ Uses the public GitHub search API. No token is required; an optional token
 from __future__ import annotations
 
 import json
+import random
 import re
 import os
 import shutil
@@ -27,6 +28,66 @@ USER_AGENT = W.USER_AGENT
 TOKEN_FILE = W.ROOT / ".github_token"
 ProgressCb = Callable[[str], None]
 _SEARCH_TIMES: list[float] = []
+_RNG = random.Random()
+
+GH_SORT_ALIASES = {
+    "stars": "stars",
+    "star": "stars",
+    "most_stars": "stars",
+    "most-stars": "stars",
+    "updated": "updated",
+    "recent": "updated",
+    "recently_updated": "updated",
+    "recently-updated": "updated",
+    "pushed": "updated",
+    "fresh": "fresh",
+    "fresh_mix": "fresh",
+    "fresh-mix": "fresh",
+    "random": "fresh",
+    "mix": "fresh",
+    "rotation": "fresh",
+}
+
+
+def normalize_gh_sort(sort: str | None) -> str:
+    key = (sort or "stars").strip().lower().replace(" ", "_")
+    return GH_SORT_ALIASES.get(key, "stars")
+
+
+def set_rng_seed(seed: int | None) -> None:
+    """Seed the weighted-shuffle RNG. Used by tests."""
+    global _RNG
+    _RNG = random.Random(seed)
+
+
+def weighted_sample(items: list, k: int, *, weight_of) -> list:
+    """Sample `k` items without replacement, weighted by `weight_of(item)`.
+
+    Items with a zero or negative weight still get a small chance so a
+    repo with no stars can appear in a fresh mix.
+    """
+    pool = list(items)
+    picked: list = []
+    k = max(0, min(int(k), len(pool)))
+    for _ in range(k):
+        if not pool:
+            break
+        weights = [max(float(weight_of(item)), 0.5) for item in pool]
+        total = sum(weights)
+        if total <= 0:
+            idx = _RNG.randrange(len(pool))
+        else:
+            draw = _RNG.uniform(0, total)
+            running = 0.0
+            idx = 0
+            for i, w in enumerate(weights):
+                running += w
+                if running >= draw:
+                    idx = i
+                    break
+        picked.append(pool.pop(idx))
+    return picked
+
 
 
 def _split_or_query(query: str, max_terms: int = 3) -> list[str]:
@@ -120,9 +181,19 @@ def search_repositories(
     per_page: int = 20,
     months: int = 12,
     progress_cb: ProgressCb | None = None,
+    sort: str | None = "stars",
+    page: int = 1,
 ) -> list[dict]:
-    """Search public repos, already filtered to recent activity, ranked by stars."""
+    """Search public repos, already filtered to recent activity.
+
+    `sort` is `stars` (default) or `updated`. `fresh` is handled by the
+    collector, which asks for a larger stars-ranked pool and then samples it.
+    """
     cutoff = cutoff_date(months)
+    sort_key = normalize_gh_sort(sort)
+    api_sort = "updated" if sort_key == "updated" else "stars"
+    per_page = max(1, min(int(per_page or 20), 100))
+    page = max(1, min(int(page or 1), 10))
     # Split long OR lists so we stay under GitHub's five-operator limit.
     # Do not wrap the query in extra parentheses; that can make GitHub return zero hits.
     chunks = _split_or_query(query, max_terms=3)
@@ -131,7 +202,7 @@ def search_repositories(
     for chunk in chunks:
         _respect_search_rate(token, progress_cb)
         q = f"{chunk} archived:false pushed:>={cutoff}"
-        params = urlencode({"q": q, "sort": "stars", "order": "desc", "per_page": per_page})
+        params = urlencode({"q": q, "sort": api_sort, "order": "desc", "per_page": per_page, "page": page})
         url = f"https://api.github.com/search/repositories?{params}"
         data = _get_json(url, token)
         for item in data.get("items") or []:
@@ -171,7 +242,10 @@ def search_repositories(
                 "forks": int(item.get("forks_count") or 0),
             }
         )
-    out.sort(key=lambda r: (-r["stars"], r["id"]))
+    if api_sort == "updated":
+        out.sort(key=lambda r: (r.get("pushed_at") or "", -r["stars"]), reverse=True)
+    else:
+        out.sort(key=lambda r: (-r["stars"], r["id"]))
     return out
 
 
@@ -189,14 +263,28 @@ def collect_github_suggestions(
     token: str | None = None,
     progress_cb: ProgressCb | None = None,
     categories: list[str] | None = None,
-    per_page: int = 20,
+    per_page: int = 50,
+    *,
+    sort: str | None = "stars",
+    already_ids: set[str] | None = None,
+    seen_path=None,
+    record_seen: bool = True,
 ) -> dict:
+    import seen_store
+
     tags = W.all_github_tags(cfg)
     machines = W.enabled_machines(cfg)
     machine = machines.get(machine_key) or {}
     selected = categories if categories is not None else list(machine.get("github_categories") or tags.keys())
     selected = [k for k in selected if k in tags]
     allow = set(cfg.get("github_allow_list") or [])
+    exclude = set(already_ids or set()) | set(allow)
+    exclude_lower = {e.lower() for e in exclude}
+    sort_key = normalize_gh_sort(sort)
+    # Fetch a larger pool than we show, so Refresh can rotate.
+    pool = max(int(per_page or 50), 30)
+    pool = max(5, min(pool, 100))
+    api_sort = "updated" if sort_key == "updated" else "stars"
 
     result_tags = []
     for key in selected:
@@ -213,14 +301,41 @@ def collect_github_suggestions(
             "description": tag.get("description") or "",
             "repos": [],
             "error": None,
+            "wrapped": False,
+            "skipped_seen": 0,
+            "skipped_already": 0,
+            "sort": sort_key,
         }
         merged: dict[str, dict] = {}
         try:
             for q in queries:
                 if progress_cb:
                     progress_cb(f"Searching GitHub for {title}…")
-                for repo in search_repositories(q, token=token, per_page=per_page, progress_cb=progress_cb):
-                    merged.setdefault(repo["id"], repo)
+                page = 1
+                while page <= 2:
+                    for repo in search_repositories(
+                        q,
+                        token=token,
+                        per_page=pool,
+                        progress_cb=progress_cb,
+                        sort=api_sort,
+                        page=page,
+                    ):
+                        merged.setdefault(repo["id"], repo)
+                    # Only ask for a second page if the first page was almost all already-seen.
+                    if page == 1:
+                        seen_so_far = set()
+                        try:
+                            seen_so_far = {s.lower() for s in seen_store.get_seen("github", machine_key, key, path=seen_path)}
+                        except ValueError:
+                            seen_so_far = set()
+                        fresh = [
+                            r for r in merged.values()
+                            if r["id"].lower() not in seen_so_far and r["id"].lower() not in exclude_lower
+                        ]
+                        if len(fresh) >= keep * 3 or len(merged) < pool:
+                            break
+                    page += 1
                 # Be kind to the unauthenticated rate limit when several queries run.
                 if len(queries) > 1:
                     time.sleep(0.6)
@@ -228,18 +343,79 @@ def collect_github_suggestions(
             slot["error"] = str(exc)
             result_tags.append(slot)
             continue
-        ranked = sorted(merged.values(), key=lambda r: (-r["stars"], r["id"]))[:keep]
-        for repo in ranked:
+
+        if api_sort == "updated":
+            ranked = sorted(merged.values(), key=lambda r: (r.get("pushed_at") or "", -r["stars"]), reverse=True)
+        else:
+            ranked = sorted(merged.values(), key=lambda r: (-r["stars"], r["id"]))
+
+        seen: list[str] = []
+        try:
+            seen = seen_store.get_seen("github", machine_key, key, path=seen_path)
+        except ValueError:
+            seen = []
+
+        skipped_already = sum(1 for r in ranked if (r.get("id") or "").lower() in exclude_lower)
+        available = [r for r in ranked if (r.get("id") or "").lower() not in exclude_lower]
+
+        if sort_key == "fresh":
+            # Weighted by stars, skipping already-shown when possible.
+            unseen = [r for r in available if (r.get("id") or "").lower() not in {s.lower() for s in seen}]
+            wrapped = False
+            if len(unseen) >= keep:
+                chosen = weighted_sample(unseen, keep, weight_of=lambda r: max(r.get("stars") or 0, 1))
+            else:
+                leftover = [r for r in available if r not in unseen]
+                chosen = list(unseen) + weighted_sample(leftover, keep - len(unseen), weight_of=lambda r: max(r.get("stars") or 0, 1))
+                wrapped = bool(leftover) and len(unseen) < keep
+            meta = {
+                "wrapped": wrapped,
+                "skipped_seen": len(available) - len(unseen),
+                "skipped_already": skipped_already,
+            }
+        else:
+            chosen, meta = seen_store.pick_fresh(
+                available,
+                id_of=lambda r: (r.get("id") or "").lower(),
+                seen={s.lower() for s in seen},
+                exclude=set(),  # already removed
+                keep=keep,
+            )
+            meta["skipped_already"] = skipped_already
+
+        out_repos = []
+        for repo in chosen:
             repo = dict(repo)
             repo["tag"] = key
             repo["allowed"] = repo["id"] in allow
-            slot["repos"].append(repo)
+            out_repos.append(repo)
+        slot["repos"] = out_repos
+        slot["wrapped"] = bool(meta.get("wrapped"))
+        slot["skipped_seen"] = int(meta.get("skipped_seen") or 0)
+        slot["skipped_already"] = int(meta.get("skipped_already") or 0)
+        if slot["wrapped"]:
+            slot["wrap_note"] = (
+                "You've seen every current match in this category; starting the list over."
+            )
+        if record_seen and machine_key and out_repos:
+            try:
+                seen_store.record_batch(
+                    "github",
+                    machine_key,
+                    key,
+                    [r["id"] for r in out_repos],
+                    wrapped=bool(meta.get("wrapped")),
+                    path=seen_path,
+                )
+            except ValueError:
+                pass
         result_tags.append(slot)
 
     return {
         "machine": machine_key,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "git_available": git_available(),
+        "sort": sort_key,
         "tags": result_tags,
     }
 
