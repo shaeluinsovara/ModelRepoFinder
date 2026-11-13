@@ -1,4 +1,4 @@
-ModelRepoFinder  v1.4
+ModelRepoFinder  v1.5
 =====================
 
 This little app looks up open-source AI models on Hugging Face, and
@@ -8,6 +8,31 @@ the ones you approve. Nothing is downloaded until you say so.
 
 The same folder works on Windows and on a Mac. A longer README.md is
 also in this folder (and on GitHub) if you prefer that format.
+
+
+What is new in v1.5
+-------------------
+  • Refresh now shows a new batch of models and GitHub repos each
+    time, instead of repeating the same list. The app remembers what
+    it already showed (on this computer only), looks further into the
+    results, and skips things you have already downloaded or approved.
+    When you have seen the current set, the list starts over and tells
+    you so. A "Show earlier suggestions again" button clears that
+    memory if you want to start over yourself.
+  • You can sort Hugging Face suggestions by most downloaded, most
+    liked, trending, or newest. You can sort GitHub suggestions by
+    most stars, recently updated, or a "fresh mix" from a larger pool.
+  • The app can look for models already on this computer — in the
+    Hugging Face cache, Ollama, LM Studio, its own folders, and any
+    extra folders you add — so you do not download a duplicate.
+    Matching suggestions are marked "Already on this computer." This
+    scan is read-only. Retire still only moves files this app itself
+    downloaded, and still never deletes them.
+  • A Top picks button shows popular Hugging Face models (most
+    downloaded, most liked, or trending) that should fit the computer
+    you picked, without needing search words. Popularity is a
+    community signal, not a guarantee of quality.
+  • Every safety check from v1.4 is still in place.
 
 
 What is new in v1.4

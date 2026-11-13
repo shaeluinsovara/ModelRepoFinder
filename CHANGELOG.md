@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5 — fresh suggestions, local scan, and top picks
+
+A features release on top of the v1.4 hardening. Every v1.4 safety check is still in place.
+
+- **Fresh suggestions on Refresh.** The same Refresh button now shows a new batch each time, instead of repeating the same models and repositories. The app remembers what it already showed (on this computer only), looks further into a larger pool of results, and skips items you have already downloaded or approved. When you have seen everything in the current pool, the list starts over and tells you so. A **Show earlier suggestions again** button clears that memory.
+- **Sort options.** Hugging Face suggestions can be sorted by most downloaded, most liked, trending, or newest. GitHub suggestions can be sorted by most stars, recently updated, or a fresh mix that picks from a larger pool with a preference for more-starred projects. Trending uses Hugging Face’s `trendingScore` sort; if a server ever rejects that, the app falls back to likes and says so.
+- **Models already on this computer.** A read-only scan looks in the Hugging Face cache, Ollama, LM Studio, this app’s own folders, and any extra folders you add. It reports size and path. Search results that match a model already here (by repository name or GGUF filename) are marked **Already on this computer**. The scan is bounded (depth, file count, and a time limit) and will not follow a path outside the folder it was asked to look at. Retire still only moves files this app manages, and still never deletes.
+- **Top picks.** A no-keyword view lists popular Hugging Face models — most downloaded, most liked, or trending — filtered to ones that should fit the computer you picked, overall and for the categories you have ticked. The page clearly says that popularity is a community signal, not a guarantee of quality.
+
 ## v1.4 — hardening
 
 A hardening release. No new features, just a tighter, more trustworthy v1.3.

@@ -1,12 +1,10 @@
 # ModelRepoFinder
 
-> **Note:** v1.4 untested as of 2:05pm EST 11/13/2026 - Testing soon
-
 A small local app that helps you find open-source AI models on [Hugging Face](https://huggingface.co) and open-source projects on [GitHub](https://github.com), preview what would fit the computer you pick, and download only the ones you approve.
 
 Nothing is downloaded until you say so. The same folder works on Windows and macOS.
 
-This is **v1.4**, a hardening release of v1.3. There are no new features, only tighter safety checks, clearer wording, and tests.
+This is **v1.5**. It keeps every v1.4 safety check, and adds fresh suggestion batches, a look at models already on this computer, and a Top picks view of popular models that should fit.
 
 ## Screenshots
 
@@ -58,9 +56,11 @@ If Python is missing, install Python 3.9+ from [python.org](https://www.python.o
 
 ## What it does
 
-- **Category search on Hugging Face.** Tick the kinds of models you want (coding, emotional / relational chat, spiritual / esoteric knowledge, vision, music, speech / TTS, background / reasoning, embeddings). You can add your own category. Ticks are remembered per computer.
+- **Category search on Hugging Face.** Tick the kinds of models you want (coding, emotional / relational chat, spiritual / esoteric knowledge, vision, music, speech / TTS, background / reasoning, embeddings). You can add your own category. Ticks are remembered per computer. Each Refresh shows a new batch (it remembers what it already offered, on this computer only) and you can sort by most downloaded, most liked, trending, or newest.
+- **Top picks.** A no-keyword list of popular Hugging Face models — most downloaded, most liked, or trending — filtered to ones that should fit the computer you picked. Popularity is a community signal, not a guarantee of quality.
+- **Models already on this computer.** A read-only scan looks in the Hugging Face cache, Ollama, LM Studio, this app’s own folders, and any extra folders you add, so you can avoid downloading a duplicate. Matching search results are marked. Retire still only moves files this app itself downloaded.
 - **Paste any Hugging Face link.** A model page, an `org/name`, or a `/tree/…` or `/blob/…` link all work. Click **Check** to preview the files, total size, format (GGUF, safetensors, PyTorch, ONNX, MLX, and others), license, and a short note about what can run it. If there are GGUF quality settings, you can pick one or download the whole folder.
-- **A GitHub tab.** Finds recently updated projects (about the last 12 months), ranked by stars. Approve & download will `git clone` if git is installed, or download a zip if it is not. You can **Update** or **Retire** a downloaded repo later.
+- **A GitHub tab.** Finds recently updated projects (about the last 12 months). You can sort by stars, recent updates, or a fresh mix. Each Refresh shows a new batch. Approve & download will `git clone` if git is installed, or download a zip if it is not. You can **Update** or **Retire** a downloaded repo later.
 - **Resilient downloads.** If a Hugging Face download hits a brief network hiccup, the app retries automatically (up to four times) and picks up what was already saved when it can. You will see a line like `Connection hiccup, retrying (2/4)…`. If Hugging Face’s faster downloader keeps erroring, the app switches to a simpler method. If something still fails, click **Retry failed**. One failure in a batch does not stop the others. You do not need to close the app and start over.
 - **Retire never deletes.** Retire moves a downloaded model or repo into a `retired/` folder so you can get it back if you change your mind.
 
@@ -108,16 +108,14 @@ Leave the command or Terminal window open and read the message. Check that you a
 
 A plain-language copy of these instructions also lives in `README.txt`, next to the launchers.
 
-## What changed in v1.4
+## What changed in v1.5
 
-v1.4 is a hardening release. In brief:
+- **Refresh shows a new batch** of models and GitHub repos each time, instead of repeating the same list. A **Show earlier suggestions again** button starts the list over.
+- **Sort options** for Hugging Face (most downloaded, most liked, trending, newest) and GitHub (most stars, recently updated, a fresh mix).
+- **A read-only scan** of models already on this computer (Hugging Face cache, Ollama, LM Studio, this app’s folders, and folders you add), with matches marked on the suggestions.
+- **Top picks**, a no-keyword view of popular Hugging Face models that should fit, with a clear note that popularity is not a quality guarantee.
 
-- Category names and download folders are checked so a request cannot write outside the intended directory.
-- The local service checks `Host` and `Origin`, limits request size, and requires a per-launch token from its own page, so a web page from somewhere else should not be able to poke at it.
-- Whole-folder model downloads keep license files and README model cards (they still skip `.git`).
-- GitHub’s zip fallback checks every archive member before extracting.
-- Helper libraries are pinned in `requirements.lock`.
-- A test suite lives in `tests/`. See [CHANGELOG.md](CHANGELOG.md) for the full list.
+v1.4’s safety checks are unchanged. See [CHANGELOG.md](CHANGELOG.md) for the full list, including the earlier hardening work.
 
 ## Running the tests
 

@@ -1,4 +1,4 @@
-# Pinned, tested dependency set for ModelRepoFinder v1.4.
+# Pinned, tested dependency set for ModelRepoFinder v1.5.
 # These versions were chosen so a single lock file works on Python 3.9
 # through 3.13. huggingface_hub 0.36.2 is the last release that still
 # supports Python 3.9; later 1.x / 2.x releases need 3.10+.
