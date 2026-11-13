@@ -65,7 +65,7 @@
     }
     label { display: block; font-weight: 600; font-size: 0.92rem; margin-bottom: 0.3rem; }
     .hint { color: var(--muted); font-size: 0.88rem; margin: 0.25rem 0 0; }
-    select, input[type="text"], input[type="password"], input[type="number"] {
+    select, input[type="text"], input[type="password"], input[type="number"], input[type="time"] {
       width: 100%;
       padding: 0.6rem 0.7rem;
       border: 1px solid var(--line);
@@ -254,11 +254,68 @@
       margin: 0 0 0.8rem;
     }
     #paste-result { margin-top: 0.9rem; }
+    #schedule-panel h2 {
+      font-family: Palatino, "Palatino Linotype", Georgia, serif;
+      font-size: 1.25rem;
+      margin: 0 0 0.4rem;
+      color: var(--plum-dark);
+    }
+    #schedule-panel h3 {
+      font-family: Palatino, Georgia, serif;
+      font-size: 1.05rem;
+      margin: 1.1rem 0 0.35rem;
+      color: var(--plum-dark);
+    }
+    .sched-grid {
+      display: grid;
+      gap: 0.85rem;
+      margin-top: 0.7rem;
+    }
+    @media (min-width: 720px) {
+      .sched-grid.four { grid-template-columns: repeat(4, 1fr); }
+      .sched-grid.three { grid-template-columns: repeat(3, 1fr); }
+    }
+    .sched-cats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem 0.9rem;
+      margin: 0.4rem 0 0.2rem;
+    }
+    .sched-cats label, .sched-check {
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .sched-cats input, .sched-check input { width: auto; }
+    #sched-delete-box {
+      background: #f6e4e4;
+      border-radius: 10px;
+      padding: 0.7rem 0.85rem;
+      margin-top: 0.6rem;
+      color: var(--err);
+    }
+    #sched-delete-box input[type="text"] { margin-top: 0.35rem; }
+    .sched-log, #sched-preview {
+      margin-top: 0.7rem;
+    }
+    .sched-log ul, #sched-preview ul { padding-left: 1.15rem; margin: 0.3rem 0; }
+    .sched-meta { color: var(--muted); font-size: 0.88rem; margin: 0.5rem 0 0; }
+    .badge-auto {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--plum-dark);
+      background: #eee6f0;
+      border-radius: 999px;
+      padding: 0.05rem 0.5rem;
+      margin-left: 0.35rem;
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>ModelRepoFinder <span class="ver" id="version-label">v1.5</span></h1>
+    <h1>ModelRepoFinder <span class="ver" id="version-label">v1.6</span></h1>
     <p class="tagline">Find open-source models and GitHub projects that fit your house, then download only the ones you approve. Nothing leaves this computer except requests to Hugging Face or GitHub.</p>
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tab-hf" aria-selected="true" aria-controls="pane-hf">Hugging Face models</button>
@@ -284,6 +341,150 @@
       <div class="actions">
         <button type="button" class="secondary" id="save-folder">Save folder</button>
       </div>
+    </section>
+
+    <section class="panel" id="schedule-panel">
+      <h2>Scheduled auto-scan</h2>
+      <p class="hint">
+        While this app is open, it can look for new models on a schedule you set,
+        download ones that match your conditions (up to the limits you choose),
+        and tidy out-of-date ones it downloaded itself. Turning this on is your
+        <strong>standing approval</strong> for those matching models &mdash; they
+        will be downloaded without a separate Approve click. Use Dry run first
+        if you want to see what would happen. Cleanup is skipped if a search or
+        download fails, and the default is to move old models to the retired
+        folder, not to delete them. Manual downloads and models this app only
+        found on the computer are left alone unless you opt one in.
+      </p>
+      <label class="sched-check" style="margin-top:0.7rem;">
+        <input type="checkbox" id="sched-enabled"> Turn on the scheduled auto-scan for this computer
+      </label>
+      <div class="sched-grid four">
+        <div>
+          <label for="sched-frequency">How often</label>
+          <select id="sched-frequency">
+            <option value="daily">Every day</option>
+            <option value="weekly" selected>Every week</option>
+            <option value="every_n_days">Every N days</option>
+          </select>
+        </div>
+        <div id="sched-weekday-wrap">
+          <label for="sched-weekday">On this weekday</label>
+          <select id="sched-weekday">
+            <option value="monday">Monday</option>
+            <option value="tuesday">Tuesday</option>
+            <option value="wednesday">Wednesday</option>
+            <option value="thursday">Thursday</option>
+            <option value="friday">Friday</option>
+            <option value="saturday">Saturday</option>
+            <option value="sunday">Sunday</option>
+          </select>
+        </div>
+        <div id="sched-ndays-wrap" class="hidden">
+          <label for="sched-ndays">Every how many days</label>
+          <input id="sched-ndays" type="number" min="1" max="90" value="7">
+        </div>
+        <div>
+          <label for="sched-time">At this time</label>
+          <input id="sched-time" type="time" value="03:00">
+        </div>
+      </div>
+      <h3>What to look for</h3>
+      <p class="hint">Tick the categories to search, and optionally include Top picks (popular models that should fit, using Hugging Face community numbers). Popularity is a signal, not a quality guarantee.</p>
+      <div class="sched-cats" id="sched-cats"></div>
+      <label class="sched-check">
+        <input type="checkbox" id="sched-top-picks"> Also include Top picks
+      </label>
+      <div class="sched-grid three">
+        <div>
+          <label for="sched-sort">Sort by</label>
+          <select id="sched-sort">
+            <option value="downloads">Most downloaded</option>
+            <option value="likes">Most liked</option>
+            <option value="trending">Trending</option>
+            <option value="newest">Newest</option>
+          </select>
+        </div>
+        <div>
+          <label for="sched-min-downloads">Minimum downloads (optional)</label>
+          <input id="sched-min-downloads" type="number" min="0" value="0">
+        </div>
+        <div>
+          <label for="sched-min-likes">Minimum likes (optional)</label>
+          <input id="sched-min-likes" type="number" min="0" value="0">
+        </div>
+      </div>
+      <div class="sched-cats" id="sched-formats" style="margin-top:0.7rem;"></div>
+      <label class="sched-check">
+        <input type="checkbox" id="sched-must-fit" checked> Only models that fit this computer's size cap
+      </label>
+      <label class="sched-check">
+        <input type="checkbox" id="sched-skip-local" checked> Skip models already on this computer
+      </label>
+      <h3>Limits</h3>
+      <div class="sched-grid three">
+        <div>
+          <label for="sched-max-new">Max new models per run</label>
+          <input id="sched-max-new" type="number" min="1" max="50" value="3">
+        </div>
+        <div>
+          <label for="sched-max-total">Max auto-managed models in total</label>
+          <input id="sched-max-total" type="number" min="1" max="200" value="20">
+        </div>
+        <div>
+          <label for="sched-max-disk">Max disk for auto-downloaded models (GB)</label>
+          <input id="sched-max-disk" type="number" min="0.1" step="0.1" value="50">
+        </div>
+      </div>
+      <h3>Cleanup of out-of-date models</h3>
+      <p class="hint">This only applies to models the schedule itself downloaded, or ones you opted in below. It will not touch models this app only found on the computer. At least one model is always kept in each category, and cleanup waits until downloads in the same run have finished and been checked. The default is to retire (move) a model, which can be undone by moving it back.</p>
+      <label class="sched-check">
+        <input type="checkbox" id="sched-cleanup" checked> Clean up out-of-date auto-managed models after a successful run
+      </label>
+      <div class="sched-grid three">
+        <div>
+          <label for="sched-policy">When a model is out of date</label>
+          <select id="sched-policy">
+            <option value="keep_newest">Keep the newest N per category</option>
+            <option value="older_than">Older than a number of days</option>
+            <option value="superseded">Superseded by a newer version of the same family</option>
+          </select>
+        </div>
+        <div id="sched-keep-wrap">
+          <label for="sched-keep-n">Keep how many newest per category</label>
+          <input id="sched-keep-n" type="number" min="1" max="50" value="3">
+        </div>
+        <div id="sched-older-wrap" class="hidden">
+          <label for="sched-older">Older than this many days</label>
+          <input id="sched-older" type="number" min="1" max="3650" value="30">
+        </div>
+        <div>
+          <label for="sched-action">What to do with them</label>
+          <select id="sched-action">
+            <option value="retire" selected>Retire (move to the retired folder)</option>
+            <option value="delete">Delete permanently</option>
+          </select>
+        </div>
+      </div>
+      <div id="sched-delete-box" class="hidden">
+        <strong>Permanent deletion cannot be undone.</strong>
+        <p class="hint" style="color:inherit;">This still only applies to models the schedule downloaded or that you opted in. Type DELETE in the box below, tick the confirmation, and click Save settings. You will also be asked to confirm in a dialog.</p>
+        <label for="sched-delete-type">Type DELETE to confirm</label>
+        <input id="sched-delete-type" type="text" autocomplete="off" spellcheck="false" placeholder="DELETE">
+        <label class="sched-check" style="margin-top:0.5rem;">
+          <input type="checkbox" id="sched-delete-tick"> I understand this cannot be undone
+        </label>
+      </div>
+      <p class="sched-meta" id="sched-meta"></p>
+      <div class="actions">
+        <button type="button" id="sched-save">Save schedule</button>
+        <button type="button" class="secondary" id="sched-preview">Dry run / preview</button>
+        <button type="button" class="secondary" id="sched-run">Run now</button>
+      </div>
+      <div id="sched-preview-box"></div>
+      <h3>Activity log</h3>
+      <p class="hint">Recent scheduled runs, dry runs, and what was added, retired, or deleted.</p>
+      <div class="sched-log" id="sched-log"><p class="hint">No runs yet.</p></div>
     </section>
 
     <section class="panel" id="progress-panel" hidden>
@@ -666,18 +867,39 @@
         const left = document.createElement("div");
         const title = document.createElement("div");
         title.textContent = item.name + "  ·  " + item.tag + "  ·  " + fmtBytes(item.size_gb);
+        if (item.auto_managed) {
+          const badge = document.createElement("span");
+          badge.className = "badge-auto";
+          badge.textContent = "auto-managed";
+          title.appendChild(badge);
+        }
         const path = document.createElement("div");
         path.className = "path";
         path.textContent = item.path;
         left.appendChild(title);
         left.appendChild(path);
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        actions.style.marginTop = "0";
+        const opt = document.createElement("button");
+        opt.type = "button";
+        opt.className = "secondary";
+        if (item.auto_managed) {
+          opt.textContent = "Leave auto-cleanup";
+          opt.addEventListener("click", () => scheduleOptOut(item));
+        } else {
+          opt.textContent = "Include in auto-cleanup";
+          opt.addEventListener("click", () => scheduleOptIn(item));
+        }
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "danger";
         btn.textContent = "Retire";
         btn.addEventListener("click", () => retireHf(item));
+        actions.appendChild(opt);
+        actions.appendChild(btn);
         li.appendChild(left);
-        li.appendChild(btn);
+        li.appendChild(actions);
         ul.appendChild(li);
       });
     }
@@ -1207,13 +1429,14 @@
         { j: job.download, kind: "download" },
         { j: job.github_refresh, kind: "search" },
         { j: job.github_download, kind: "download" },
-        { j: job.top_picks, kind: "search" }
+        { j: job.top_picks, kind: "search" },
+        { j: job.schedule, kind: "search" }
       ];
       const running = jobs.find((x) => x.j && x.j.status === "running");
       const erred = jobs.find((x) => x.j && x.j.status === "error");
       const done = jobs.filter((x) => x.j && x.j.status === "done").pop();
       const busy = !!running;
-      ["refresh", "gh-refresh", "hf-top-picks", "hf-reset-seen", "gh-reset-seen", "rescan-local", "add-scan-folder"].forEach((id) => {
+      ["refresh", "gh-refresh", "hf-top-picks", "hf-reset-seen", "gh-reset-seen", "rescan-local", "add-scan-folder", "sched-save", "sched-preview", "sched-run"].forEach((id) => {
         if ($(id)) $(id).disabled = busy;
       });
       $("save-folder").disabled = busy;
@@ -1276,7 +1499,11 @@
         if (job.local_models) renderLocalModels(job.local_models);
         if (job.installed) renderInstalled(job.installed);
         if (job.github_installed) renderGhInstalled(job.github_installed);
-        const busy = ["refresh", "download", "github_refresh", "github_download", "top_picks"].some((k) => job[k] && job[k].status === "running");
+        if (job.schedule && job.schedule.status === "done" && job.schedule.data) {
+          renderSchedulePreview(job.schedule.data);
+        }
+        if (job.schedule_state) renderSchedule(job.schedule_state, { keepForm: true });
+        const busy = ["refresh", "download", "github_refresh", "github_download", "top_picks", "schedule"].some((k) => job[k] && job[k].status === "running");
         if (!busy && pollTimer) {
           clearInterval(pollTimer);
           pollTimer = null;
@@ -1308,6 +1535,7 @@
         renderInstalled(info.installed || []);
         renderGhInstalled(info.github_installed || []);
         renderLocalModels(info.local_models || {});
+        renderSchedule(info.schedule);
         setBanner("info", "Computer changed. Category ticks above are the ones saved for this computer. Click Refresh suggestions to search.");
       } catch (err) { setBanner("err", err.message); }
     });
@@ -1729,10 +1957,296 @@
       } catch (err) { setBanner("err", err.message); }
     });
 
+
+    function formatWhen(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    }
+    function toggleScheduleFields() {
+      const freq = $("sched-frequency").value;
+      $("sched-weekday-wrap").classList.toggle("hidden", freq !== "weekly");
+      $("sched-ndays-wrap").classList.toggle("hidden", freq !== "every_n_days");
+      const policy = $("sched-policy").value;
+      $("sched-keep-wrap").classList.toggle("hidden", policy !== "keep_newest");
+      $("sched-older-wrap").classList.toggle("hidden", policy !== "older_than");
+      const del = $("sched-action").value === "delete";
+      $("sched-delete-box").classList.toggle("hidden", !del);
+    }
+    function collectScheduleFromForm() {
+      const cats = [...document.querySelectorAll("#sched-cats input[type=checkbox]:checked")].map((c) => c.dataset.key);
+      const formats = [...document.querySelectorAll("#sched-formats input[type=checkbox]:checked")].map((c) => c.dataset.key);
+      return {
+        enabled: $("sched-enabled").checked,
+        frequency: $("sched-frequency").value,
+        weekday: $("sched-weekday").value,
+        every_n_days: parseInt($("sched-ndays").value, 10) || 7,
+        time: $("sched-time").value || "03:00",
+        categories: cats,
+        include_top_picks: $("sched-top-picks").checked,
+        sort: $("sched-sort").value,
+        formats: formats,
+        must_fit: $("sched-must-fit").checked,
+        min_downloads: parseInt($("sched-min-downloads").value, 10) || 0,
+        min_likes: parseInt($("sched-min-likes").value, 10) || 0,
+        skip_already_local: $("sched-skip-local").checked,
+        max_new_per_run: parseInt($("sched-max-new").value, 10) || 3,
+        max_total_auto: parseInt($("sched-max-total").value, 10) || 20,
+        max_disk_gb: parseFloat($("sched-max-disk").value) || 50,
+        cleanup_enabled: $("sched-cleanup").checked,
+        cleanup_policy: $("sched-policy").value,
+        keep_newest_n: parseInt($("sched-keep-n").value, 10) || 3,
+        older_than_days: parseInt($("sched-older").value, 10) || 30,
+        cleanup_action: $("sched-action").value
+      };
+    }
+    function renderSchedule(state, opts) {
+      opts = opts || {};
+      state = state || (info && info.schedule) || {};
+      const s = state.settings || state || {};
+      if (!opts.keepForm) {
+        $("sched-enabled").checked = !!s.enabled;
+        $("sched-frequency").value = s.frequency || "weekly";
+        $("sched-weekday").value = s.weekday || "monday";
+        $("sched-ndays").value = s.every_n_days || 7;
+        $("sched-time").value = s.time || "03:00";
+        $("sched-top-picks").checked = !!s.include_top_picks;
+        $("sched-sort").value = s.sort || "downloads";
+        $("sched-min-downloads").value = s.min_downloads || 0;
+        $("sched-min-likes").value = s.min_likes || 0;
+        $("sched-must-fit").checked = s.must_fit !== false;
+        $("sched-skip-local").checked = s.skip_already_local !== false;
+        $("sched-max-new").value = s.max_new_per_run || 3;
+        $("sched-max-total").value = s.max_total_auto || 20;
+        $("sched-max-disk").value = s.max_disk_gb || 50;
+        $("sched-cleanup").checked = s.cleanup_enabled !== false;
+        $("sched-policy").value = s.cleanup_policy || "keep_newest";
+        $("sched-keep-n").value = s.keep_newest_n || 3;
+        $("sched-older").value = s.older_than_days || 30;
+        $("sched-action").value = s.cleanup_action || "retire";
+        if (s.cleanup_action !== "delete") {
+          $("sched-delete-type").value = "";
+          $("sched-delete-tick").checked = false;
+        }
+        const selected = new Set(s.categories || []);
+        const host = $("sched-cats");
+        host.innerHTML = "";
+        const cats = ((info.categories || {}).hf || []);
+        cats.forEach((cat) => {
+          const lab = document.createElement("label");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.dataset.key = cat.key;
+          cb.checked = selected.size ? selected.has(cat.key) : !!cat.selected;
+          lab.appendChild(cb);
+          lab.appendChild(document.createTextNode(" " + (cat.name || cat.key)));
+          host.appendChild(lab);
+        });
+        const fmtsHost = $("sched-formats");
+        fmtsHost.innerHTML = "";
+        const m = currentMachineInfo() || {};
+        const machineFmts = (m.formats || ["gguf"]).map((f) => String(f).toLowerCase());
+        const pickedFmts = new Set((s.formats || []).map((f) => String(f).toLowerCase()));
+        machineFmts.forEach((fmt) => {
+          const lab = document.createElement("label");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.dataset.key = fmt;
+          cb.checked = pickedFmts.size ? pickedFmts.has(fmt) : true;
+          lab.appendChild(cb);
+          lab.appendChild(document.createTextNode(" " + fmt.toUpperCase() + " only"));
+          fmtsHost.appendChild(lab);
+        });
+        if (!machineFmts.length) {
+          fmtsHost.innerHTML = "<p class='hint'>Formats follow this computer's usual list.</p>";
+        }
+        toggleScheduleFields();
+      }
+      const bits = [];
+      if (s.enabled) {
+        bits.push("The schedule is on for this computer.");
+        if (state.next_run) bits.push("Next automatic run: " + formatWhen(state.next_run) + " (while the app is open).");
+        else bits.push("Next automatic run: waiting for the first scheduled time.");
+      } else {
+        bits.push("The schedule is off. Save with the box ticked to turn it on.");
+      }
+      if (state.last_run) bits.push("Last run: " + formatWhen(state.last_run) + (state.last_run_status ? " (" + state.last_run_status + ")" : "") + ".");
+      if (state.last_message) bits.push(state.last_message);
+      bits.push("Auto-managed models: " + (state.tracked_count || 0) + " (about " + (state.tracked_disk_gb || 0) + " GB).");
+      $("sched-meta").textContent = bits.join(" ");
+      renderScheduleLog(state.log || []);
+    }
+    function renderScheduleLog(entries) {
+      const host = $("sched-log");
+      if (!entries || !entries.length) {
+        host.innerHTML = "<p class='hint'>No runs yet.</p>";
+        return;
+      }
+      const ul = document.createElement("ul");
+      entries.forEach((e) => {
+        const li = document.createElement("li");
+        const when = formatWhen(e.at) || "";
+        const parts = [];
+        parts.push((e.kind || "run") + (e.status ? " · " + e.status : ""));
+        if (e.message) parts.push(e.message);
+        const added = (e.downloaded || []).map((d) => d.id || d.name).filter(Boolean);
+        const retired = (e.retired || []).map((d) => d.id || d.name).filter(Boolean);
+        const deleted = (e.deleted || []).map((d) => d.id || d.name).filter(Boolean);
+        if (added.length) parts.push("Added: " + added.join(", "));
+        if (retired.length) parts.push("Retired: " + retired.join(", "));
+        if (deleted.length) parts.push("Deleted: " + deleted.join(", "));
+        if ((e.errors || []).length) parts.push("Errors: " + e.errors.join("; "));
+        li.textContent = (when ? when + " — " : "") + parts.join(" ");
+        ul.appendChild(li);
+      });
+      host.innerHTML = "";
+      host.appendChild(ul);
+    }
+    function renderSchedulePreview(data) {
+      const host = $("sched-preview-box");
+      if (!data) { host.innerHTML = ""; return; }
+      const box = document.createElement("div");
+      box.className = "banner " + (data.offline || data.status === "error" ? "err" : (data.dry_run ? "info" : "ok"));
+      box.textContent = data.message || (data.dry_run ? "Preview" : "Run finished");
+      const wrap = document.createElement("div");
+      wrap.id = "sched-preview";
+      wrap.appendChild(box);
+      function list(title, rows, reasonKey) {
+        const h = document.createElement("h3");
+        h.textContent = title;
+        wrap.appendChild(h);
+        if (!rows || !rows.length) {
+          const p = document.createElement("p");
+          p.className = "hint";
+          p.textContent = "None.";
+          wrap.appendChild(p);
+          return;
+        }
+        const ul = document.createElement("ul");
+        rows.forEach((r) => {
+          const li = document.createElement("li");
+          const size = r.size_gb ? (" · " + fmtBytes(r.size_gb)) : "";
+          const why = r[reasonKey] || r.cleanup_reason || r.skip_reason || "";
+          li.textContent = (r.id || r.name || "model") + (r.tag ? "  ·  " + r.tag : "") + size + (why ? "  —  " + why : "");
+          ul.appendChild(li);
+        });
+        wrap.appendChild(ul);
+      }
+      if (data.dry_run) {
+        list("Would be downloaded", data.would_download || []);
+        const verb = data.cleanup_action === "delete" ? "Would be permanently deleted" : "Would be moved to the retired folder";
+        list(verb, data.would_cleanup || [], "cleanup_reason");
+        list("Would be skipped (limits or filters)", data.skipped || [], "skip_reason");
+      } else {
+        list("Downloaded", data.downloaded || []);
+        const verb = data.cleanup_action === "delete" ? "Permanently deleted" : "Moved to the retired folder";
+        list(verb, data.cleaned || [], "cleanup_reason");
+        if ((data.failed || []).length) list("Failed", data.failed || [], "error");
+      }
+      if ((data.errors || []).length) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = "Notes: " + data.errors.join("; ");
+        wrap.appendChild(p);
+      }
+      host.innerHTML = "";
+      host.appendChild(wrap);
+    }
+    async function saveSchedule() {
+      const schedule = collectScheduleFromForm();
+      if (schedule.cleanup_action === "delete") {
+        const typed = ($("sched-delete-type").value || "").trim().toUpperCase();
+        if (typed !== "DELETE" || !$("sched-delete-tick").checked) {
+          setBanner("err", "To turn on permanent deletion, type DELETE in the confirmation box, tick the box, and click Save schedule.");
+          $("sched-delete-box").classList.remove("hidden");
+          return;
+        }
+        const ok = confirm("This will allow the schedule to permanently delete auto-managed models that the cleanup policy picks. This cannot be undone. Continue?");
+        if (!ok) return;
+      }
+      try {
+        const body = {
+          machine: $("machine").value,
+          schedule: schedule,
+          delete_confirmation: (schedule.cleanup_action === "delete") ? ($("sched-delete-type").value || "") : ""
+        };
+        info = await api("/api/schedule", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        renderSchedule(info.schedule);
+        renderInstalled(info.installed || []);
+        const on = info.schedule && info.schedule.enabled;
+        setBanner("ok", on
+          ? "Schedule saved. Turning it on is standing approval to download matching models while this app is open."
+          : "Schedule saved. The auto-scan is off.");
+      } catch (err) { setBanner("err", err.message); }
+    }
+    async function startScheduleJob(path, label) {
+      try {
+        await api(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ machine: $("machine").value })
+        });
+        setBanner("info", label);
+        startPolling();
+      } catch (err) { setBanner("err", err.message); }
+    }
+    async function scheduleOptIn(item) {
+      try {
+        info = await api("/api/schedule/opt-in", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            machine: item.machine,
+            tag: item.tag,
+            relative_path: item.relative_path,
+            name: item.name,
+            id: item.id || item.name
+          })
+        });
+        renderInstalled(info.installed || []);
+        renderSchedule(info.schedule, { keepForm: true });
+        setBanner("ok", "“" + item.name + "” is now included in auto-cleanup. The schedule may retire or delete it according to your cleanup settings.");
+      } catch (err) { setBanner("err", err.message); }
+    }
+    async function scheduleOptOut(item) {
+      try {
+        info = await api("/api/schedule/opt-out", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            machine: item.machine,
+            tag: item.tag,
+            relative_path: item.relative_path
+          })
+        });
+        renderInstalled(info.installed || []);
+        renderSchedule(info.schedule, { keepForm: true });
+        setBanner("ok", "“" + item.name + "” will no longer be cleaned up automatically.");
+      } catch (err) { setBanner("err", err.message); }
+    }
+    $("sched-frequency").addEventListener("change", toggleScheduleFields);
+    $("sched-policy").addEventListener("change", toggleScheduleFields);
+    $("sched-action").addEventListener("change", toggleScheduleFields);
+    $("sched-save").addEventListener("click", saveSchedule);
+    $("sched-preview").addEventListener("click", () => startScheduleJob("/api/schedule/preview", "Running a dry run. Nothing will be downloaded or moved."));
+    $("sched-run").addEventListener("click", () => {
+      const schedule = collectScheduleFromForm();
+      const msg = schedule.enabled
+        ? "Run the scan now with the saved conditions? Matching models will be downloaded (this is standing approval while the schedule is on)."
+        : "Run the scan now with the saved conditions? This one run will download matching models.";
+      if (!confirm(msg)) return;
+      startScheduleJob("/api/schedule/run", "Starting the scan now…");
+    });
+
         (async function init() {
       try {
         info = await api("/api/info");
-        $("version-label").textContent = "v" + (info.version || "1.5");
+        $("version-label").textContent = "v" + (info.version || "1.6");
         fillMachines(info.machine || info.suggested_machine);
         $("base-folder").value = info.base_folder || "";
         $("path-hint").textContent = (info.base_folder || ".") + "/incoming/<computer>/<tag>/";
@@ -1741,6 +2255,7 @@
         renderCategories("github");
         renderInstalled(info.installed || []);
         renderGhInstalled(info.github_installed || []);
+        renderSchedule(info.schedule);
         if (info.github_token_set) {
           $("gh-token-hint").textContent = "A token is already saved on this computer. Leave the box blank and click Save token to clear it.";
         }
@@ -1754,7 +2269,7 @@
         if (hfData) renderHfResults(hfData);
         if (info.github_refresh && info.github_refresh.data) renderGhResults(info.github_refresh.data);
         showProgress(info);
-        const busy = ["refresh", "download", "github_refresh", "github_download", "top_picks"].some((k) => info[k] && info[k].status === "running");
+        const busy = ["refresh", "download", "github_refresh", "github_download", "top_picks", "schedule"].some((k) => (info[k] && info[k].status === "running") || (info.schedule_job && info.schedule_job.status === "running"));
         if (busy) startPolling();
       } catch (err) {
         setBanner("err", "Could not start the page. Is the ModelRepoFinder window still open? " + err.message);

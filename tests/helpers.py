@@ -36,8 +36,11 @@ def isolate(tmp: Path):
     A._SCAN_DEFAULTS = False
     A._clear_local_cache()
     import seen_store
+    import scheduler
     seen_store.set_path(tmp / ".mrf_seen.json")
-    for kind in ("refresh", "download", "github_refresh", "github_download", "top_picks"):
+    scheduler.set_path(tmp / ".mrf_schedule.json")
+    scheduler.set_now_fn(None)
+    for kind in ("refresh", "download", "github_refresh", "github_download", "top_picks", "schedule"):
         A._STATE[kind]["status"] = "idle"
         A._STATE[kind]["message"] = ""
         A._STATE[kind]["error"] = None
@@ -46,6 +49,8 @@ def isolate(tmp: Path):
             A._STATE[kind]["log"] = []
             A._STATE[kind]["queue"] = []
             A._STATE[kind]["failed"] = []
+        if kind == "schedule":
+            A._STATE[kind]["mode"] = None
     token = A.reset_csrf_token()
     A._reload_cfg()
     return A, W, token

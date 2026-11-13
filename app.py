@@ -19,6 +19,7 @@ from pathlib import Path
 
 import github_finder as GH
 import local_scan
+import scheduler
 import seen_store
 import watcher as W
 
@@ -75,6 +76,14 @@ _STATE: dict = {
         "machine": None,
         "base_folder": "",
     },
+    "schedule": {
+        "status": "idle",
+        "message": "",
+        "error": None,
+        "data": None,
+        "mode": None,
+        "log": [],
+    },
 }
 _CFG_CACHE: dict | None = None
 _CFG_LOCK = threading.Lock()
@@ -84,6 +93,7 @@ _SESSION_BASE: str | None = None
 _SCAN_DEFAULTS = True
 _LOCAL_CACHE: dict = {"result": None, "at": 0.0}
 _LOCAL_LOCK = threading.Lock()
+_SCHEDULER_STOP = threading.Event()
 
 # Per-launch request token, injected into the served page and required on POST.
 CSRF_HEADER = "X-MRF-Token"
@@ -297,6 +307,30 @@ def _already_ids() -> set[str]:
     return set(ident.get("ids") or set())
 
 
+def _tracked_keys(machine: str) -> set[tuple[str, str, str]]:
+    inv = scheduler.load_inventory(scheduler.current_path(ROOT))
+    keys = set()
+    for row in scheduler.tracked_for(inv, machine):
+        keys.add((
+            str(row.get("machine") or machine),
+            str(row.get("tag") or ""),
+            str(row.get("relative_path") or row.get("name") or ""),
+        ))
+    return keys
+
+
+def _annotate_installed(rows: list, machine: str) -> list:
+    keys = _tracked_keys(machine)
+    for row in rows:
+        key = (
+            str(row.get("machine") or machine),
+            str(row.get("tag") or ""),
+            str(row.get("relative_path") or row.get("name") or ""),
+        )
+        row["auto_managed"] = key in keys
+    return rows
+
+
 def _info_payload() -> dict:
     cfg = _cfg()
     machine = _current_machine()
@@ -334,7 +368,7 @@ def _info_payload() -> dict:
         "download": _job_public("download"),
         "github_refresh": _job_public("github_refresh"),
         "github_download": _job_public("github_download"),
-        "installed": W.list_installed(cfg, machine=machine, root=ROOT),
+        "installed": _annotate_installed(W.list_installed(cfg, machine=machine, root=ROOT), machine),
         "github_installed": W.list_github_installed(cfg, root=ROOT),
         "local_models": _local_models(),
         "scan_folders": list(cfg.get("scan_folders") or []),
@@ -350,6 +384,8 @@ def _info_payload() -> dict:
             {"key": "fresh", "name": "Fresh mix"},
         ],
         "top_picks": _job_public("top_picks"),
+        "schedule": scheduler.public_state(cfg, machine, root=ROOT),
+        "schedule_job": _job_public("schedule"),
         "popularity_disclaimer": W.POPULARITY_DISCLAIMER,
     }
 
@@ -378,7 +414,7 @@ def _set_base_folder(path_str: str) -> None:
 
 
 def _any_running() -> str | None:
-    for kind in ("refresh", "download", "github_refresh", "github_download", "top_picks"):
+    for kind in ("refresh", "download", "github_refresh", "github_download", "top_picks", "schedule"):
         if _STATE[kind]["status"] == "running":
             return kind
     return None
@@ -722,6 +758,138 @@ def _run_github_downloads(items: list[dict], action: str = "download") -> None:
         _STATE["github_download"]["queue"] = []
 
 
+
+def _start_schedule_job(handler, body: dict, *, kind: str, dry_run: bool):
+    cfg = _cfg()
+    machine = str(body.get("machine") or _current_machine())
+    try:
+        machine = W.validate_machine_key(cfg, machine, must_be_enabled=True)
+    except ValueError as exc:
+        return handler._json(400, {"error": str(exc)})
+    with _LOCK:
+        busy = _any_running()
+        if busy:
+            return handler._json(409, {"error": "Please wait for the current task to finish."})
+        _STATE["settings"]["machine"] = machine
+        _STATE["schedule"]["status"] = "running"
+        _STATE["schedule"]["mode"] = kind
+        _STATE["schedule"]["error"] = None
+        _STATE["schedule"]["data"] = None
+        _STATE["schedule"]["message"] = "Starting a dry run…" if dry_run else "Starting the scheduled scan…"
+        _STATE["schedule"]["log"] = []
+    threading.Thread(
+        target=_run_schedule,
+        args=(machine, kind, dry_run),
+        daemon=True,
+    ).start()
+    return handler._json(200, {"ok": True, "schedule": _job_public("schedule")})
+
+
+def _run_schedule(machine: str, kind: str, dry_run: bool) -> None:
+    def progress(msg: str) -> None:
+        with _LOCK:
+            _STATE["schedule"]["message"] = msg
+            log = list(_STATE["schedule"].get("log") or [])
+            log.append(msg)
+            _STATE["schedule"]["log"] = log[-40:]
+
+    try:
+        cfg = _reload_cfg()
+        sched = scheduler.schedule_for_machine(cfg, machine)
+
+        def allow_fn(repo_id: str) -> None:
+            if W.add_to_allow_list(cfg, repo_id):
+                disk = W.load_config(CONFIG_PATH)
+                disk["allow_list"] = list(cfg.get("allow_list") or [])
+                W.save_config(CONFIG_PATH, disk)
+                cfg["allow_list"] = disk["allow_list"]
+
+        result = scheduler.execute_run(
+            cfg,
+            machine,
+            sched,
+            already_ids=_already_ids(),
+            progress_cb=progress,
+            now_dt=scheduler.now(),
+            root=ROOT,
+            dry_run=dry_run,
+            kind=kind,
+            download_in_progress=False,
+            allow_fn=allow_fn,
+        )
+        _clear_local_cache()
+        status = result.get("status") or "ok"
+        # offline and preview are finished jobs, not server errors
+        job_status = "error" if status == "error" else "done"
+        with _LOCK:
+            _STATE["schedule"]["status"] = job_status
+            _STATE["schedule"]["data"] = result
+            _STATE["schedule"]["message"] = result.get("message") or ""
+            _STATE["schedule"]["error"] = (
+                result.get("message") if status == "error" else None
+            )
+            if result.get("errors") and status == "error":
+                _STATE["schedule"]["error"] = "; ".join(str(e) for e in result["errors"][:4])
+    except Exception as exc:  # noqa: BLE001
+        with _LOCK:
+            _STATE["schedule"]["status"] = "error"
+            _STATE["schedule"]["error"] = str(exc)
+            _STATE["schedule"]["message"] = "The scheduled run did not finish."
+        traceback.print_exc()
+
+
+def _scheduler_tick() -> None:
+    """Start a scheduled run for any machine whose slot is due.
+
+    Called once a minute, and once immediately at launch so a missed run
+    is caught up. Skips the tick if any other job is already running.
+    """
+    cfg = _cfg()
+    for machine in W.enabled_machines(cfg):
+        sched = scheduler.schedule_for_machine(cfg, machine)
+        if not sched["enabled"]:
+            continue
+        inv = scheduler.load_inventory(scheduler.current_path(ROOT))
+        state = scheduler.machine_state(inv, machine)
+        if not scheduler.is_due(sched, scheduler.now(), state):
+            continue
+        with _LOCK:
+            if _any_running():
+                return
+            _STATE["settings"]["machine"] = machine
+            _STATE["schedule"]["status"] = "running"
+            _STATE["schedule"]["mode"] = "scheduled"
+            _STATE["schedule"]["error"] = None
+            _STATE["schedule"]["data"] = None
+            _STATE["schedule"]["message"] = "Starting the scheduled scan…"
+            _STATE["schedule"]["log"] = []
+        _run_schedule(machine, "scheduled", False)
+        # One machine per tick keeps runs from overlapping.
+        return
+
+
+def _scheduler_loop() -> None:
+    try:
+        _scheduler_tick()
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+    while not _SCHEDULER_STOP.wait(scheduler.CHECK_INTERVAL_SECONDS):
+        try:
+            _scheduler_tick()
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+
+
+def start_scheduler() -> None:
+    _SCHEDULER_STOP.clear()
+    thread = threading.Thread(target=_scheduler_loop, name="mrf-scheduler", daemon=True)
+    thread.start()
+
+
+def stop_scheduler() -> None:
+    _SCHEDULER_STOP.set()
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(WEB), **kwargs)
@@ -751,7 +919,9 @@ class Handler(SimpleHTTPRequestHandler):
                     "github_refresh": _job_public("github_refresh"),
                     "github_download": _job_public("github_download"),
                     "top_picks": _job_public("top_picks"),
-                    "installed": W.list_installed(_cfg(), machine=machine, root=ROOT),
+                    "schedule": _job_public("schedule"),
+                    "schedule_state": scheduler.public_state(_cfg(), machine, root=ROOT),
+                    "installed": _annotate_installed(W.list_installed(_cfg(), machine=machine, root=ROOT), machine),
                     "github_installed": W.list_github_installed(_cfg(), root=ROOT),
                     "local_models": _local_models(),
                     "scan_folders": list(_cfg().get("scan_folders") or []),
@@ -810,6 +980,11 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/top-picks": self._handle_top_picks,
             "/api/seen/reset": self._handle_seen_reset,
             "/api/local-scan": self._handle_local_scan,
+            "/api/schedule": self._handle_schedule,
+            "/api/schedule/preview": self._handle_schedule_preview,
+            "/api/schedule/run": self._handle_schedule_run,
+            "/api/schedule/opt-in": self._handle_schedule_opt_in,
+            "/api/schedule/opt-out": self._handle_schedule_opt_out,
         }
         handler = routes.get(parsed)
         if not handler:
@@ -1287,6 +1462,78 @@ class Handler(SimpleHTTPRequestHandler):
         result = _local_models(force=force)
         return self._json(200, result)
 
+    def _handle_schedule(self, body: dict) -> None:
+        cfg = _cfg()
+        machine = str(body.get("machine") or _current_machine())
+        try:
+            machine = W.validate_machine_key(cfg, machine, must_be_enabled=True)
+        except ValueError as exc:
+            return self._json(400, {"error": str(exc)})
+        raw = body.get("schedule") if isinstance(body.get("schedule"), dict) else body
+        known = list(W.all_hf_tags(cfg).keys()) + list(W.SPECIAL_HF_CATEGORIES)
+        formats = [f.lower() for f in ((cfg.get("machines") or {}).get(machine) or {}).get("formats") or []]
+        existing = scheduler.schedule_for_machine(cfg, machine)
+        try:
+            incoming = scheduler.normalize_schedule(
+                raw, strict=True, known_categories=known, machine_formats=formats,
+            )
+            incoming = scheduler.apply_delete_confirmation(
+                incoming,
+                existing,
+                confirmation=body.get("delete_confirmation") or body.get("confirmation") or raw.get("delete_confirmation"),
+            )
+        except ValueError as exc:
+            return self._json(400, {"error": str(exc)})
+        was_enabled = bool(existing.get("enabled"))
+        scheduler.put_schedule(cfg, machine, incoming)
+        _persist_fields(machines=cfg.get("machines"))
+        inv = scheduler.load_inventory(scheduler.current_path(ROOT))
+        scheduler.note_enabled_transition(inv, machine, was_enabled, bool(incoming["enabled"]))
+        scheduler.save_inventory(inv, scheduler.current_path(ROOT))
+        with _LOCK:
+            _STATE["settings"]["machine"] = machine
+        return self._json(200, _info_payload())
+
+    def _handle_schedule_preview(self, body: dict) -> None:
+        return _start_schedule_job(self, body, kind="preview", dry_run=True)
+
+    def _handle_schedule_run(self, body: dict) -> None:
+        return _start_schedule_job(self, body, kind="run_now", dry_run=False)
+
+    def _handle_schedule_opt_in(self, body: dict) -> None:
+        cfg = _cfg()
+        machine = str(body.get("machine") or _current_machine())
+        tag = str(body.get("tag") or body.get("category") or "")
+        relative = str(body.get("relative_path") or body.get("name") or "")
+        repo_id = str(body.get("id") or "") or None
+        try:
+            machine = W.validate_machine_key(cfg, machine)
+            inv = scheduler.load_inventory(scheduler.current_path(ROOT))
+            scheduler.opt_in(
+                cfg, inv, machine=machine, tag=tag, relative_path=relative,
+                root=ROOT, repo_id=repo_id,
+            )
+            scheduler.save_inventory(inv, scheduler.current_path(ROOT))
+        except (ValueError, FileNotFoundError) as exc:
+            return self._json(400, {"error": str(exc)})
+        return self._json(200, _info_payload())
+
+    def _handle_schedule_opt_out(self, body: dict) -> None:
+        machine = str(body.get("machine") or _current_machine())
+        tag = str(body.get("tag") or body.get("category") or "")
+        relative = str(body.get("relative_path") or body.get("name") or "")
+        try:
+            machine = W._safe_component(machine, "computer")
+            tag = W._safe_component(tag, "category")
+            relative = str(W._safe_relative(relative))
+        except ValueError as exc:
+            return self._json(400, {"error": str(exc)})
+        inv = scheduler.load_inventory(scheduler.current_path(ROOT))
+        scheduler.opt_out(inv, machine=machine, tag=tag, relative_path=relative)
+        scheduler.save_inventory(inv, scheduler.current_path(ROOT))
+        return self._json(200, _info_payload())
+
+
 
 def main() -> int:
 
@@ -1363,6 +1610,8 @@ def main() -> int:
     print(f"  Open this page: {url}")
     print("  Leave this window open while you use it.")
     print("  Close this window (or press Ctrl+C) when you are done.")
+    print("  A weekly (or daily) auto-scan, if you have turned it on, only runs")
+    print("  while this window is open.")
     print()
     if not args.no_browser:
         try:
@@ -1370,11 +1619,15 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             print("  (Could not open the browser automatically. Please open the link above.)")
 
+    start_scheduler()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down. Goodbye.")
+        stop_scheduler()
         server.shutdown()
+    else:
+        stop_scheduler()
     return 0
 
 
