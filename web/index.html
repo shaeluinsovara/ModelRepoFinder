@@ -227,12 +227,38 @@
     .pick-list { list-style: none; padding: 0; margin: 0.4rem 0 0; }
     .pick-list li { padding: 0.25rem 0; }
     input[type="radio"] { accent-color: var(--plum); margin-right: 0.4rem; }
+
+    .badge.already { background: #e4f0e8; color: var(--ok); }
+    .badge.source { background: #eee6f0; color: var(--plum-dark); }
+    .sort-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem 1.1rem;
+      align-items: flex-end;
+      margin-top: 0.85rem;
+    }
+    .sort-row .sort-field { flex: 1 1 12rem; max-width: 18rem; }
+    .sort-row .sort-field select { width: 100%; }
+    .local-group { margin-top: 0.85rem; }
+    .local-group h3 {
+      font-size: 0.95rem;
+      margin: 0 0 0.25rem;
+      color: var(--plum-dark);
+    }
+    .disclaimer {
+      font-size: 0.9rem;
+      color: var(--muted);
+      background: #f3ece0;
+      border-radius: 10px;
+      padding: 0.65rem 0.8rem;
+      margin: 0 0 0.8rem;
+    }
     #paste-result { margin-top: 0.9rem; }
   </style>
 </head>
 <body>
   <header>
-    <h1>ModelRepoFinder <span class="ver" id="version-label">v1.4</span></h1>
+    <h1>ModelRepoFinder <span class="ver" id="version-label">v1.5</span></h1>
     <p class="tagline">Find open-source models and GitHub projects that fit your house, then download only the ones you approve. Nothing leaves this computer except requests to Hugging Face or GitHub.</p>
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tab-hf" aria-selected="true" aria-controls="pane-hf">Hugging Face models</button>
@@ -323,13 +349,41 @@
             <button type="button" id="hf-custom-add">Add category</button>
           </div>
         </div>
+        <div class="sort-row">
+          <div class="sort-field">
+            <label for="hf-sort">Sort suggestions by</label>
+            <select id="hf-sort">
+              <option value="downloads">Most downloaded</option>
+              <option value="likes">Most liked</option>
+              <option value="trending">Trending</option>
+              <option value="newest">Newest</option>
+            </select>
+          </div>
+        </div>
+        <p class="hint">Refresh shows a new batch each time, skipping models you have already been shown and ones already on this computer. Top picks is a no-keyword list of popular models that should fit, using Hugging Face community numbers — popularity is a signal, not a quality guarantee.</p>
         <div class="actions">
           <button type="button" id="refresh">Refresh suggestions</button>
+          <button type="button" class="secondary" id="hf-top-picks">Top picks</button>
+          <button type="button" class="secondary" id="hf-reset-seen">Show earlier suggestions again</button>
         </div>
       </section>
       <section id="hf-results"></section>
       <section class="panel" id="installed-panel">
-        <h2 style="font-family: Palatino, Georgia, serif; font-size: 1.25rem; margin: 0 0 0.4rem; color: var(--plum-dark);">Already downloaded models</h2>
+        <h2 style="font-family: Palatino, Georgia, serif; font-size: 1.25rem; margin: 0 0 0.4rem; color: var(--plum-dark);">Models on this computer</h2>
+        <p class="hint">This is a read-only look at models already here: ones this app downloaded, plus any it finds in the Hugging Face cache, Ollama, LM Studio, and folders you add. Retire is only offered for models this app manages, and it moves them — it never deletes anything, and it will not touch files outside this app's own folders.</p>
+        <div class="row two" style="margin-top:0.6rem;">
+          <div>
+            <label for="scan-folder">Add a folder to scan</label>
+            <input id="scan-folder" type="text" placeholder="Paste a folder that already holds models" spellcheck="false">
+          </div>
+          <div style="display:flex;align-items:flex-end;gap:0.5rem;flex-wrap:wrap;">
+            <button type="button" class="secondary" id="add-scan-folder">Add folder</button>
+            <button type="button" class="secondary" id="rescan-local">Scan this computer</button>
+          </div>
+        </div>
+        <p class="hint" id="scan-folders-hint"></p>
+        <div id="local-models-list"><p class="hint">Click Scan this computer to look for models already here. Nothing is moved or deleted.</p></div>
+        <h3 style="font-family: Palatino, Georgia, serif; font-size: 1.05rem; margin: 1.1rem 0 0.35rem; color: var(--plum-dark);">Downloaded with this app</h3>
         <p class="hint">Retire moves a model into the retired folder. It is never deleted.</p>
         <ul class="installed" id="installed-list"><li>Nothing downloaded yet.</li></ul>
       </section>
@@ -369,9 +423,21 @@
           <input id="gh-token" type="password" placeholder="Leave blank unless searches are rate-limited" autocomplete="off">
           <p class="hint" id="gh-token-hint">Without a token, GitHub allows only a few searches per minute. A personal access token (classic, public-repo read is enough) is saved only on this computer, in a hidden local file, never sent anywhere except GitHub.</p>
         </div>
+        <div class="sort-row">
+          <div class="sort-field">
+            <label for="gh-sort">Sort suggestions by</label>
+            <select id="gh-sort">
+              <option value="stars">Most stars</option>
+              <option value="updated">Recently updated</option>
+              <option value="fresh">Fresh mix</option>
+            </select>
+          </div>
+        </div>
+        <p class="hint">Refresh shows a new batch each time, skipping repositories you have already been shown and ones already downloaded. Fresh mix picks from a larger pool, weighted toward more-starred projects.</p>
         <div class="actions">
           <button type="button" class="secondary" id="save-token">Save token</button>
           <button type="button" id="gh-refresh">Refresh suggestions</button>
+          <button type="button" class="secondary" id="gh-reset-seen">Show earlier suggestions again</button>
         </div>
       </section>
       <section id="gh-results"></section>
@@ -654,28 +720,64 @@
       });
     }
 
+    function moreRecentHf(job) {
+      const a = job && job.refresh;
+      const b = job && job.top_picks;
+      if (a && a.status === "running") return null;
+      if (b && b.status === "running") return null;
+      const stamp = (j) => (j && j.data && j.data.generated_at) || "";
+      if (a && a.status === "done" && a.data && b && b.status === "done" && b.data) {
+        return stamp(b) >= stamp(a) ? b.data : a.data;
+      }
+      if (b && b.status === "done" && b.data) return b.data;
+      if (a && a.status === "done" && a.data) return a.data;
+      return null;
+    }
+    function tagNotes(tag, panel) {
+
+      if (tag.description) {
+        const d = document.createElement("p");
+        d.className = "hint";
+        d.textContent = tag.description;
+        panel.appendChild(d);
+      }
+      if (tag.wrap_note) {
+        const d = document.createElement("p");
+        d.className = "hint";
+        d.textContent = tag.wrap_note;
+        panel.appendChild(d);
+      } else if (tag.skipped_seen || tag.skipped_already) {
+        const parts = [];
+        if (tag.skipped_seen) parts.push(tag.skipped_seen + " already shown");
+        if (tag.skipped_already) parts.push(tag.skipped_already + " already on this computer or already approved");
+        const d = document.createElement("p");
+        d.className = "hint";
+        d.textContent = "Skipped " + parts.join(", ") + ".";
+        panel.appendChild(d);
+      }
+      if (tag.error) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = tag.error;
+        panel.appendChild(p);
+      }
+    }
     function renderHfResults(data) {
       const root = $("hf-results");
       root.innerHTML = "";
-      if (!data || !data.tags) return;
+      if (!data) return;
+      if (data.mode === "top_picks" || data.overall) {
+        renderTopPicks(data);
+        return;
+      }
+      if (!data.tags) return;
       data.tags.forEach((tag) => {
         const panel = document.createElement("section");
         panel.className = "panel tag-block";
         const h = document.createElement("h2");
         h.textContent = (tag.title || titleCase(tag.name)) + "  ·  keeping " + tag.keep;
         panel.appendChild(h);
-        if (tag.description) {
-          const d = document.createElement("p");
-          d.className = "hint";
-          d.textContent = tag.description;
-          panel.appendChild(d);
-        }
-        if (tag.error) {
-          const p = document.createElement("p");
-          p.className = "hint";
-          p.textContent = tag.error;
-          panel.appendChild(p);
-        }
+        tagNotes(tag, panel);
         const models = tag.models || [];
         if (!models.length && !tag.error) {
           const p = document.createElement("p");
@@ -708,18 +810,7 @@
         const h = document.createElement("h2");
         h.textContent = (tag.title || titleCase(tag.name)) + "  ·  keeping " + tag.keep;
         panel.appendChild(h);
-        if (tag.description) {
-          const d = document.createElement("p");
-          d.className = "hint";
-          d.textContent = tag.description;
-          panel.appendChild(d);
-        }
-        if (tag.error) {
-          const p = document.createElement("p");
-          p.className = "hint";
-          p.textContent = tag.error;
-          panel.appendChild(p);
-        }
+        tagNotes(tag, panel);
         const repos = tag.repos || [];
         if (!repos.length && !tag.error) {
           const p = document.createElement("p");
@@ -742,7 +833,155 @@
       });
     }
 
+    function sourceLabel(source) {
+      return ({
+        hf_cache: "Hugging Face cache",
+        ollama: "Ollama",
+        lmstudio: "LM Studio",
+        app: "this app",
+        custom: "your folder"
+      })[source] || source || "";
+    }
+    function renderTopPicks(data) {
+      const root = $("hf-results");
+      root.innerHTML = "";
+      const panel = document.createElement("section");
+      panel.className = "panel tag-block";
+      const h = document.createElement("h2");
+      h.textContent = "Top picks for this computer";
+      panel.appendChild(h);
+      const disc = document.createElement("p");
+      disc.className = "disclaimer";
+      disc.textContent = data.disclaimer || (info && info.popularity_disclaimer) ||
+        "Popularity is a community signal (downloads, likes, or trending), not a guarantee of quality.";
+      panel.appendChild(disc);
+      if (data.sort_fallback) {
+        const fb = document.createElement("p");
+        fb.className = "hint";
+        fb.textContent = "Trending was not available, so these are sorted by likes instead.";
+        panel.appendChild(fb);
+      }
+      if (data.overall_error) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = data.overall_error;
+        panel.appendChild(p);
+      }
+      const overall = data.overall || [];
+      if (!overall.length && !data.overall_error) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = "No popular models currently fit this computer.";
+        panel.appendChild(p);
+      }
+      overall.forEach((model) => panel.appendChild(modelRow(model, model.tag || "top_picks")));
+      if (overall.length) {
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "Approve & download selected top picks";
+        btn.addEventListener("click", () => downloadSelected(panel, startHfDownload));
+        actions.appendChild(btn);
+        panel.appendChild(actions);
+      }
+      root.appendChild(panel);
+      (data.tags || []).forEach((tag) => {
+        const block = document.createElement("section");
+        block.className = "panel tag-block";
+        const th = document.createElement("h2");
+        th.textContent = (tag.title || titleCase(tag.name)) + "  ·  top picks";
+        block.appendChild(th);
+        tagNotes(tag, block);
+        const models = tag.models || [];
+        if (!models.length && !tag.error) {
+          const p = document.createElement("p");
+          p.className = "hint";
+          p.textContent = "No popular models in this category currently fit this computer.";
+          block.appendChild(p);
+        }
+        models.forEach((model) => block.appendChild(modelRow(model, tag.name)));
+        if (models.length) {
+          const actions = document.createElement("div");
+          actions.className = "actions";
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = "Approve & download selected in " + (tag.title || titleCase(tag.name));
+          btn.addEventListener("click", () => downloadSelected(block, startHfDownload));
+          actions.appendChild(btn);
+          block.appendChild(actions);
+        }
+        root.appendChild(block);
+      });
+    }
+    function renderLocalModels(data) {
+      const root = $("local-models-list");
+      if (!root) return;
+      root.innerHTML = "";
+      const items = (data && data.items) || [];
+      const folders = (data && data.scan_folders) || (info && info.scan_folders) || [];
+      const hint = $("scan-folders-hint");
+      if (hint) {
+        hint.textContent = folders.length
+          ? ("Extra folders being scanned: " + folders.join(" · "))
+          : "No extra folders yet. Paste a path and click Add folder if your models live somewhere else.";
+      }
+      if (data && data.truncated) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = "The scan stopped early (" + ((data.truncate_reasons || []).join(", ") || "limit reached") + ") so this list may be incomplete.";
+        root.appendChild(p);
+      }
+      if (data && data.errors && data.errors.length) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = data.errors.join(" ");
+        root.appendChild(p);
+      }
+      const found = items.filter((it) => it.source !== "app");
+      if (!found.length) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = "No models were found in the Hugging Face cache, Ollama, LM Studio, or extra folders.";
+        root.appendChild(p);
+        return;
+      }
+      const groups = {};
+      found.forEach((it) => {
+        const key = it.source || "other";
+        (groups[key] = groups[key] || []).push(it);
+      });
+      Object.keys(groups).forEach((source) => {
+        const wrap = document.createElement("div");
+        wrap.className = "local-group";
+        const h = document.createElement("h3");
+        h.textContent = sourceLabel(source);
+        wrap.appendChild(h);
+        const ul = document.createElement("ul");
+        ul.className = "installed";
+        groups[source].forEach((it) => {
+          const li = document.createElement("li");
+          const left = document.createElement("div");
+          const title = document.createElement("div");
+          title.textContent = it.id || it.name || it.path;
+          const path = document.createElement("div");
+          path.className = "path";
+          const size = (typeof it.size_gb === "number" && it.size_gb)
+            ? (it.size_gb >= 1 ? it.size_gb.toFixed(1) + " GB" : (it.size_gb * 1024).toFixed(0) + " MB")
+            : "";
+          path.textContent = (it.path || "") + (size ? "  ·  " + size : "") + (it.format ? "  ·  " + it.format : "");
+          left.appendChild(title);
+          left.appendChild(path);
+          li.appendChild(left);
+          ul.appendChild(li);
+        });
+        wrap.appendChild(ul);
+        root.appendChild(wrap);
+      });
+    }
+
     function modelRow(model, tag) {
+
       const row = document.createElement("div");
       row.className = "model";
       const box = document.createElement("input");
@@ -775,6 +1014,12 @@
         ok.textContent = "approved";
         h.appendChild(ok);
       }
+      if (model.already_local) {
+        const here = document.createElement("span");
+        here.className = "badge already";
+        here.textContent = "Already on this computer";
+        h.appendChild(here);
+      }
       const meta = document.createElement("p");
       meta.className = "meta";
       const fileLabel = model.file_path === "(whole model)" || model.file === "(whole model)" ? "whole model" : (model.file || model.file_path);
@@ -797,6 +1042,13 @@
           + ". Estimated memory to run: about " + fmtBytes(model.estimated_ram_gb)
           + " (rough estimate). Actual use depends on context length and the app you run it in.";
         body.appendChild(fit);
+      }
+      if (model.already_local && model.already_local_path) {
+        const here = document.createElement("p");
+        here.className = "hint";
+        const src = model.already_local_source ? sourceLabel(model.already_local_source) + ": " : "";
+        here.textContent = "Already on this computer (" + src + model.already_local_path + ").";
+        body.appendChild(here);
       }
       if (model.app_note) {
         const note = document.createElement("p");
@@ -839,6 +1091,12 @@
         ok.className = "badge allowed";
         ok.textContent = "approved";
         h.appendChild(ok);
+      }
+      if (repo.already_local) {
+        const here = document.createElement("span");
+        here.className = "badge already";
+        here.textContent = "Already on this computer";
+        h.appendChild(here);
       }
       const meta = document.createElement("p");
       meta.className = "meta";
@@ -948,14 +1206,16 @@
         { j: job.refresh, kind: "search" },
         { j: job.download, kind: "download" },
         { j: job.github_refresh, kind: "search" },
-        { j: job.github_download, kind: "download" }
+        { j: job.github_download, kind: "download" },
+        { j: job.top_picks, kind: "search" }
       ];
       const running = jobs.find((x) => x.j && x.j.status === "running");
       const erred = jobs.find((x) => x.j && x.j.status === "error");
       const done = jobs.filter((x) => x.j && x.j.status === "done").pop();
       const busy = !!running;
-      $("refresh").disabled = busy;
-      $("gh-refresh").disabled = busy;
+      ["refresh", "gh-refresh", "hf-top-picks", "hf-reset-seen", "gh-reset-seen", "rescan-local", "add-scan-folder"].forEach((id) => {
+        if ($(id)) $(id).disabled = busy;
+      });
       $("save-folder").disabled = busy;
       $("machine").disabled = busy;
       if ($("hf-check")) $("hf-check").disabled = busy;
@@ -1010,11 +1270,13 @@
       try {
         const job = await api("/api/job");
         showProgress(job);
-        if (job.refresh && job.refresh.status === "done" && job.refresh.data) renderHfResults(job.refresh.data);
+        const hfData = moreRecentHf(job);
+        if (hfData) renderHfResults(hfData);
         if (job.github_refresh && job.github_refresh.status === "done" && job.github_refresh.data) renderGhResults(job.github_refresh.data);
+        if (job.local_models) renderLocalModels(job.local_models);
         if (job.installed) renderInstalled(job.installed);
         if (job.github_installed) renderGhInstalled(job.github_installed);
-        const busy = ["refresh", "download", "github_refresh", "github_download"].some((k) => job[k] && job[k].status === "running");
+        const busy = ["refresh", "download", "github_refresh", "github_download", "top_picks"].some((k) => job[k] && job[k].status === "running");
         if (!busy && pollTimer) {
           clearInterval(pollTimer);
           pollTimer = null;
@@ -1045,6 +1307,7 @@
         $("gh-results").innerHTML = "";
         renderInstalled(info.installed || []);
         renderGhInstalled(info.github_installed || []);
+        renderLocalModels(info.local_models || {});
         setBanner("info", "Computer changed. Category ticks above are the ones saved for this computer. Click Refresh suggestions to search.");
       } catch (err) { setBanner("err", err.message); }
     });
@@ -1066,11 +1329,41 @@
         await api("/api/refresh", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ machine: $("machine").value, categories: selectedKeys("hf") })
+          body: JSON.stringify({
+            machine: $("machine").value,
+            categories: selectedKeys("hf"),
+            sort: $("hf-sort").value
+          })
         });
-        setBanner("info", "Searching Hugging Face for the ticked categories. This can take a few minutes if many are selected.");
+        setBanner("info", "Searching Hugging Face for a fresh batch in the ticked categories. This can take a few minutes if many are selected.");
         $("hf-results").innerHTML = "";
         startPolling();
+      } catch (err) { setBanner("err", err.message); }
+    });
+    $("hf-top-picks").addEventListener("click", async () => {
+      try {
+        await api("/api/top-picks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            machine: $("machine").value,
+            categories: selectedKeys("hf"),
+            sort: $("hf-sort").value
+          })
+        });
+        setBanner("info", "Looking up popular models that should fit this computer. Popularity is a community signal, not a quality guarantee.");
+        $("hf-results").innerHTML = "";
+        startPolling();
+      } catch (err) { setBanner("err", err.message); }
+    });
+    $("hf-reset-seen").addEventListener("click", async () => {
+      try {
+        await api("/api/seen/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scope: "hf", machine: $("machine").value })
+        });
+        setBanner("ok", "Earlier Hugging Face suggestions will be shown again the next time you click Refresh.");
       } catch (err) { setBanner("err", err.message); }
     });
     $("gh-refresh").addEventListener("click", async () => {
@@ -1078,11 +1371,60 @@
         await api("/api/github/refresh", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ machine: $("machine").value, categories: selectedKeys("github") })
+          body: JSON.stringify({
+            machine: $("machine").value,
+            categories: selectedKeys("github"),
+            sort: $("gh-sort").value
+          })
         });
-        setBanner("info", "Searching GitHub for the ticked categories. Nothing will be downloaded yet.");
+        setBanner("info", "Searching GitHub for a fresh batch in the ticked categories. Nothing will be downloaded yet.");
         $("gh-results").innerHTML = "";
         startPolling();
+      } catch (err) { setBanner("err", err.message); }
+    });
+    $("gh-reset-seen").addEventListener("click", async () => {
+      try {
+        await api("/api/seen/reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scope: "github", machine: $("machine").value })
+        });
+        setBanner("ok", "Earlier GitHub suggestions will be shown again the next time you click Refresh.");
+      } catch (err) { setBanner("err", err.message); }
+    });
+    $("rescan-local").addEventListener("click", async () => {
+      try {
+        setBanner("info", "Scanning this computer for models. This is read-only — nothing is moved or deleted.");
+        const data = await api("/api/local-scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ force: true })
+        });
+        renderLocalModels(data);
+        const n = (data.items || []).length;
+        setBanner("ok", n ? ("Found " + n + " model" + (n === 1 ? "" : "s") + " on this computer.") : "No extra models were found on this computer.");
+      } catch (err) { setBanner("err", err.message); }
+    });
+    $("add-scan-folder").addEventListener("click", async () => {
+      const folder = ($("scan-folder").value || "").trim();
+      if (!folder) {
+        setBanner("err", "Paste a folder path first.");
+        return;
+      }
+      try {
+        info = await api("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ add_scan_folder: folder })
+        });
+        $("scan-folder").value = "";
+        const scanned = await api("/api/local-scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ force: true })
+        });
+        renderLocalModels(scanned);
+        setBanner("ok", "Folder added and scanned. Models found there will be marked in the suggestions.");
       } catch (err) { setBanner("err", err.message); }
     });
     $("save-token").addEventListener("click", async () => {
@@ -1390,7 +1732,7 @@
         (async function init() {
       try {
         info = await api("/api/info");
-        $("version-label").textContent = "v" + (info.version || "1.4");
+        $("version-label").textContent = "v" + (info.version || "1.5");
         fillMachines(info.machine || info.suggested_machine);
         $("base-folder").value = info.base_folder || "";
         $("path-hint").textContent = (info.base_folder || ".") + "/incoming/<computer>/<tag>/";
@@ -1408,10 +1750,11 @@
         if (info.git_available === false) {
           $("gh-token-hint").textContent += " Git was not found, so downloads will use a zip of the default branch.";
         }
-        if (info.refresh && info.refresh.data) renderHfResults(info.refresh.data);
+        const hfData = moreRecentHf(info);
+        if (hfData) renderHfResults(hfData);
         if (info.github_refresh && info.github_refresh.data) renderGhResults(info.github_refresh.data);
         showProgress(info);
-        const busy = ["refresh", "download", "github_refresh", "github_download"].some((k) => info[k] && info[k].status === "running");
+        const busy = ["refresh", "download", "github_refresh", "github_download", "top_picks"].some((k) => info[k] && info[k].status === "running");
         if (busy) startPolling();
       } catch (err) {
         setBanner("err", "Could not start the page. Is the ModelRepoFinder window still open? " + err.message);

@@ -11,12 +11,15 @@ import json
 import secrets
 import sys
 import threading
+import time
 import traceback
 import webbrowser
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
 import github_finder as GH
+import local_scan
+import seen_store
 import watcher as W
 
 ROOT = Path(__file__).resolve().parent
@@ -62,6 +65,12 @@ _STATE: dict = {
         "total_bytes": 0,
         "percent": None,
     },
+    "top_picks": {
+        "status": "idle",
+        "message": "",
+        "error": None,
+        "data": None,
+    },
     "settings": {
         "machine": None,
         "base_folder": "",
@@ -71,6 +80,10 @@ _CFG_CACHE: dict | None = None
 _CFG_LOCK = threading.Lock()
 # Set by --base-folder so tests and one-off runs do not rewrite machines.yaml.
 _SESSION_BASE: str | None = None
+# Tests set this to False so a unit test does not walk the real home folder.
+_SCAN_DEFAULTS = True
+_LOCAL_CACHE: dict = {"result": None, "at": 0.0}
+_LOCAL_LOCK = threading.Lock()
 
 # Per-launch request token, injected into the served page and required on POST.
 CSRF_HEADER = "X-MRF-Token"
@@ -220,6 +233,70 @@ def _job_public(kind: str) -> dict:
     return out
 
 
+
+def _clear_local_cache() -> None:
+    with _LOCAL_LOCK:
+        _LOCAL_CACHE["result"] = None
+        _LOCAL_CACHE["at"] = 0.0
+
+
+def _local_models(*, force: bool = False) -> dict:
+    """Return a (usually cached) read-only scan of models on this computer."""
+    with _LOCAL_LOCK:
+        age = time.time() - (_LOCAL_CACHE["at"] or 0)
+        if not force and _LOCAL_CACHE["result"] is not None and age < 120:
+            return _LOCAL_CACHE["result"]
+    cfg = _cfg()
+    result = local_scan.scan_local_models(
+        cfg,
+        ROOT,
+        include_defaults=_SCAN_DEFAULTS,
+    )
+    with _LOCAL_LOCK:
+        _LOCAL_CACHE["result"] = result
+        _LOCAL_CACHE["at"] = time.time()
+    return result
+
+
+def _identities() -> dict:
+    result = _local_models()
+    ident = local_scan.identity_sets(result)
+    cfg = _cfg()
+    for key in ("allow_list", "github_allow_list"):
+        for item in cfg.get(key) or []:
+            if not item:
+                continue
+            low = str(item).lower()
+            ident["ids"].add(low)
+            if "/" in item:
+                ident["ids"].add(item.replace("/", "__").lower())
+    for row in W.list_github_installed(cfg, root=ROOT):
+        name = row.get("name") or ""
+        if not name:
+            continue
+        ident["ids"].add(name.lower())
+        if "__" in name and "/" not in name:
+            ident["ids"].add(name.replace("__", "/", 1).lower())
+    return ident
+
+
+def _annotate_payload(data: dict | None) -> dict | None:
+    if not data:
+        return data
+    ident = _identities()
+    for tag in data.get("tags") or []:
+        local_scan.annotate_already_local(tag.get("models") or [], ident)
+        local_scan.annotate_already_local(tag.get("repos") or [], ident)
+    if data.get("overall"):
+        local_scan.annotate_already_local(data["overall"], ident)
+    return data
+
+
+def _already_ids() -> set[str]:
+    ident = _identities()
+    return set(ident.get("ids") or set())
+
+
 def _info_payload() -> dict:
     cfg = _cfg()
     machine = _current_machine()
@@ -259,6 +336,21 @@ def _info_payload() -> dict:
         "github_download": _job_public("github_download"),
         "installed": W.list_installed(cfg, machine=machine, root=ROOT),
         "github_installed": W.list_github_installed(cfg, root=ROOT),
+        "local_models": _local_models(),
+        "scan_folders": list(cfg.get("scan_folders") or []),
+        "hf_sorts": [
+            {"key": "downloads", "name": "Most downloaded"},
+            {"key": "likes", "name": "Most liked"},
+            {"key": "trending", "name": "Trending"},
+            {"key": "newest", "name": "Newest"},
+        ],
+        "github_sorts": [
+            {"key": "stars", "name": "Most stars"},
+            {"key": "updated", "name": "Recently updated"},
+            {"key": "fresh", "name": "Fresh mix"},
+        ],
+        "top_picks": _job_public("top_picks"),
+        "popularity_disclaimer": W.POPULARITY_DISCLAIMER,
     }
 
 
@@ -286,13 +378,18 @@ def _set_base_folder(path_str: str) -> None:
 
 
 def _any_running() -> str | None:
-    for kind in ("refresh", "download", "github_refresh", "github_download"):
+    for kind in ("refresh", "download", "github_refresh", "github_download", "top_picks"):
         if _STATE[kind]["status"] == "running":
             return kind
     return None
 
 
-def _run_refresh(machine: str, categories: list[str] | None, search_limit: int) -> None:
+def _run_refresh(
+    machine: str,
+    categories: list[str] | None,
+    search_limit: int,
+    sort: str = "downloads",
+) -> None:
     def progress(msg: str) -> None:
         with _LOCK:
             _STATE["refresh"]["message"] = msg
@@ -309,7 +406,12 @@ def _run_refresh(machine: str, categories: list[str] | None, search_limit: int) 
             progress_cb=progress,
             search_limit=search_limit,
             categories=categories,
+            sort=sort,
+            already_ids=_already_ids(),
+            seen_path=seen_store.current_path(ROOT),
+            record_seen=True,
         )
+        data = _annotate_payload(data)
         report_name = (cfg.get("paths") or {}).get("report") or "report.md"
         try:
             W.write_report(data, ROOT / report_name, dry_run=True)
@@ -467,7 +569,12 @@ def _run_downloads(machine: str, items: list[dict]) -> None:
         _STATE["download"]["queue"] = []
 
 
-def _run_github_refresh(machine: str, categories: list[str] | None, per_page: int) -> None:
+def _run_github_refresh(
+    machine: str,
+    categories: list[str] | None,
+    per_page: int,
+    sort: str = "stars",
+) -> None:
     def progress(msg: str) -> None:
         with _LOCK:
             _STATE["github_refresh"]["message"] = msg
@@ -486,7 +593,12 @@ def _run_github_refresh(machine: str, categories: list[str] | None, per_page: in
             progress_cb=progress,
             categories=categories,
             per_page=per_page,
+            sort=sort,
+            already_ids=_already_ids(),
+            seen_path=seen_store.current_path(ROOT),
+            record_seen=True,
         )
+        data = _annotate_payload(data)
         with _LOCK:
             _STATE["github_refresh"]["data"] = data
             _STATE["github_refresh"]["status"] = "done"
@@ -496,6 +608,44 @@ def _run_github_refresh(machine: str, categories: list[str] | None, per_page: in
             _STATE["github_refresh"]["status"] = "error"
             _STATE["github_refresh"]["error"] = str(exc)
             _STATE["github_refresh"]["message"] = "Could not fetch GitHub suggestions."
+        traceback.print_exc()
+
+
+
+def _run_top_picks(
+    machine: str,
+    categories: list[str] | None,
+    sort: str,
+    search_limit: int,
+) -> None:
+    def progress(msg: str) -> None:
+        with _LOCK:
+            _STATE["top_picks"]["message"] = msg
+
+    try:
+        with _LOCK:
+            _STATE["top_picks"]["status"] = "running"
+            _STATE["top_picks"]["error"] = None
+            _STATE["top_picks"]["message"] = "Looking up popular models that should fit…"
+        cfg = _reload_cfg()
+        data = W.collect_top_picks(
+            cfg,
+            machine,
+            progress_cb=progress,
+            sort=sort,
+            categories=categories,
+            search_limit=search_limit,
+        )
+        data = _annotate_payload(data)
+        with _LOCK:
+            _STATE["top_picks"]["data"] = data
+            _STATE["top_picks"]["status"] = "done"
+            _STATE["top_picks"]["message"] = "Here are popular models that should fit. Nothing has been downloaded."
+    except Exception as exc:  # noqa: BLE001
+        with _LOCK:
+            _STATE["top_picks"]["status"] = "error"
+            _STATE["top_picks"]["error"] = str(exc)
+            _STATE["top_picks"]["message"] = "Could not fetch top picks."
         traceback.print_exc()
 
 
@@ -600,10 +750,15 @@ class Handler(SimpleHTTPRequestHandler):
                     "download": _job_public("download"),
                     "github_refresh": _job_public("github_refresh"),
                     "github_download": _job_public("github_download"),
+                    "top_picks": _job_public("top_picks"),
                     "installed": W.list_installed(_cfg(), machine=machine, root=ROOT),
                     "github_installed": W.list_github_installed(_cfg(), root=ROOT),
+                    "local_models": _local_models(),
+                    "scan_folders": list(_cfg().get("scan_folders") or []),
                 }
             return self._json(200, payload)
+        if parsed == "/api/local-models":
+            return self._json(200, _local_models())
         return super().do_GET()
 
     def _serve_index(self) -> None:
@@ -652,6 +807,9 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/github/download": self._handle_github_download,
             "/api/github/update": self._handle_github_update,
             "/api/github/retire": self._handle_github_retire,
+            "/api/top-picks": self._handle_top_picks,
+            "/api/seen/reset": self._handle_seen_reset,
+            "/api/local-scan": self._handle_local_scan,
         }
         handler = routes.get(parsed)
         if not handler:
@@ -746,6 +904,17 @@ class Handler(SimpleHTTPRequestHandler):
                 _persist_fields(**{"github_tags": cfg["github_tags"]})
             else:
                 return self._json(400, {"error": "Unknown category."})
+        if "add_scan_folder" in body:
+            try:
+                local_scan.add_scan_folder(cfg, str(body.get("add_scan_folder") or ""))
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
+            _persist_fields(scan_folders=list(cfg.get("scan_folders") or []))
+            _clear_local_cache()
+        if "remove_scan_folder" in body:
+            local_scan.remove_scan_folder(cfg, str(body.get("remove_scan_folder") or ""))
+            _persist_fields(scan_folders=list(cfg.get("scan_folders") or []))
+            _clear_local_cache()
         return self._json(200, _info_payload())
 
     def _handle_categories(self, body: dict) -> None:
@@ -818,8 +987,9 @@ class Handler(SimpleHTTPRequestHandler):
         categories = body.get("categories")
         if categories is not None and not isinstance(categories, list):
             return self._json(400, {"error": "categories must be a list."})
-        search_limit = int(body.get("search_limit") or 40)
-        search_limit = max(5, min(search_limit, 40))
+        search_limit = int(body.get("search_limit") or 80)
+        search_limit = max(10, min(search_limit, 100))
+        sort = W.normalize_hf_sort(str(body.get("sort") or "downloads"))
         if categories is not None and not categories:
             return self._json(400, {"error": "Tick at least one category to search."})
         with _LOCK:
@@ -832,7 +1002,7 @@ class Handler(SimpleHTTPRequestHandler):
             _STATE["refresh"]["error"] = None
         threading.Thread(
             target=_run_refresh,
-            args=(machine, categories, search_limit),
+            args=(machine, categories, search_limit, sort),
             daemon=True,
         ).start()
         return self._json(200, {"ok": True, "refresh": _job_public("refresh")})
@@ -953,8 +1123,9 @@ class Handler(SimpleHTTPRequestHandler):
         categories = body.get("categories")
         if categories is not None and not isinstance(categories, list):
             return self._json(400, {"error": "categories must be a list."})
-        per_page = int(body.get("per_page") or 20)
-        per_page = max(5, min(per_page, 30))
+        per_page = int(body.get("per_page") or 50)
+        per_page = max(10, min(per_page, 100))
+        sort = GH.normalize_gh_sort(str(body.get("sort") or "stars"))
         if categories is not None and not categories:
             return self._json(400, {"error": "Tick at least one category to search."})
         with _LOCK:
@@ -966,7 +1137,7 @@ class Handler(SimpleHTTPRequestHandler):
             _STATE["github_refresh"]["error"] = None
         threading.Thread(
             target=_run_github_refresh,
-            args=(machine, categories, per_page),
+            args=(machine, categories, per_page, sort),
             daemon=True,
         ).start()
         return self._json(200, {"ok": True, "github_refresh": _job_public("github_refresh")})
@@ -1065,7 +1236,60 @@ class Handler(SimpleHTTPRequestHandler):
         )
 
 
+    def _handle_top_picks(self, body: dict) -> None:
+        cfg = _cfg()
+        machine = str(body.get("machine") or _current_machine())
+        if machine not in W.enabled_machines(cfg):
+            return self._json(400, {"error": f"Unknown machine: {machine}"})
+        categories = body.get("categories")
+        if categories is not None and not isinstance(categories, list):
+            return self._json(400, {"error": "categories must be a list."})
+        sort = W.normalize_hf_sort(str(body.get("sort") or "downloads"))
+        search_limit = int(body.get("search_limit") or 50)
+        search_limit = max(10, min(search_limit, 100))
+        with _LOCK:
+            if _any_running():
+                return self._json(409, {"error": "Please wait for the current task to finish."})
+            _STATE["settings"]["machine"] = machine
+            _STATE["top_picks"]["status"] = "running"
+            _STATE["top_picks"]["message"] = "Starting…"
+            _STATE["top_picks"]["error"] = None
+        threading.Thread(
+            target=_run_top_picks,
+            args=(machine, categories, sort, search_limit),
+            daemon=True,
+        ).start()
+        return self._json(200, {"ok": True, "top_picks": _job_public("top_picks")})
+
+    def _handle_seen_reset(self, body: dict) -> None:
+        scope = str(body.get("scope") or "all").strip().lower()
+        if scope not in {"hf", "github", "top_picks", "all"}:
+            return self._json(400, {"error": "Scope must be hf, github, top_picks, or all."})
+        machine = body.get("machine")
+        category = body.get("category") or body.get("tag")
+        try:
+            if machine:
+                machine = W._safe_component(str(machine), "computer")
+            if category:
+                category = W._safe_component(str(category), "category")
+            seen_store.reset(
+                scope=scope,
+                machine=machine or None,
+                category=category or None,
+                path=seen_store.current_path(ROOT),
+            )
+        except ValueError as exc:
+            return self._json(400, {"error": str(exc)})
+        return self._json(200, {"ok": True, "reset": True, "scope": scope})
+
+    def _handle_local_scan(self, body: dict) -> None:
+        force = bool(body.get("force", True))
+        result = _local_models(force=force)
+        return self._json(200, result)
+
+
 def main() -> int:
+
     parser = argparse.ArgumentParser(description="ModelRepoFinder")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser window")

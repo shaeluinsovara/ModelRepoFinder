@@ -33,10 +33,15 @@ def isolate(tmp: Path):
     A._CFG_CACHE = None
     A._STATE["settings"]["machine"] = None
     A._STATE["settings"]["base_folder"] = str(tmp / "data")
-    for kind in ("refresh", "download", "github_refresh", "github_download"):
+    A._SCAN_DEFAULTS = False
+    A._clear_local_cache()
+    import seen_store
+    seen_store.set_path(tmp / ".mrf_seen.json")
+    for kind in ("refresh", "download", "github_refresh", "github_download", "top_picks"):
         A._STATE[kind]["status"] = "idle"
         A._STATE[kind]["message"] = ""
         A._STATE[kind]["error"] = None
+        A._STATE[kind]["data"] = None
         if "log" in A._STATE[kind]:
             A._STATE[kind]["log"] = []
             A._STATE[kind]["queue"] = []
