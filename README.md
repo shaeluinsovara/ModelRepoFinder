@@ -1,5 +1,7 @@
 # ModelRepoFinder
 
+> **Note:** v1.4 untested as of 2:05pm EST 11/13/2026 - Testing soon
+
 A small local app that helps you find open-source AI models on [Hugging Face](https://huggingface.co) and open-source projects on [GitHub](https://github.com), preview what would fit the computer you pick, and download only the ones you approve.
 
 Nothing is downloaded until you say so. The same folder works on Windows and macOS.
