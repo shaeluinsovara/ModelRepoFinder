@@ -142,15 +142,15 @@ class V15ApiTests(unittest.TestCase):
                 "/api/refresh",
                 {"machine": "pc_32gb_gpu", "categories": ["coding"], "sort": "likes"},
             )
-        self.assertEqual(status, 200, data)
-        # The worker runs on a thread; wait briefly for it.
-        import time
-        for _ in range(20):
-            if captured:
-                break
-            time.sleep(0.05)
-        self.assertEqual(captured.get("sort"), "likes")
-        self.assertEqual(captured.get("machine"), "pc_32gb_gpu")
+            self.assertEqual(status, 200, data)
+            # The worker runs on a thread. Stay inside the patch until it calls us.
+            import time
+            for _ in range(40):
+                if captured:
+                    break
+                time.sleep(0.05)
+            self.assertEqual(captured.get("sort"), "likes")
+            self.assertEqual(captured.get("machine"), "pc_32gb_gpu")
 
     def test_top_picks_starts_and_unknown_machine_rejected(self):
         status, data, _ = self._post(
