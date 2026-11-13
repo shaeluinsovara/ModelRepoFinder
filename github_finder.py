@@ -7,8 +7,10 @@ Uses the public GitHub search API. No token is required; an optional token
 from __future__ import annotations
 
 import json
+import re
 import os
 import shutil
+import stat
 import subprocess
 import time
 import zipfile
@@ -61,30 +63,11 @@ def cutoff_date(months: int = 12) -> str:
 
 
 def load_token(root: Path | None = None) -> str:
-    path = (root or W.ROOT) / ".github_token"
-    if not path.exists():
-        return ""
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+    return W.load_secret(".github_token", W._KEYRING_GH, root)
 
 
 def save_token(token: str, root: Path | None = None) -> None:
-    path = (root or W.ROOT) / ".github_token"
-    token = (token or "").strip()
-    if not token:
-        if path.exists():
-            try:
-                path.unlink()
-            except OSError:
-                pass
-        return
-    path.write_text(token + "\n", encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    W.save_secret(".github_token", W._KEYRING_GH, token, root)
 
 
 def git_available() -> bool:
@@ -360,22 +343,102 @@ def _stream_to_file(url: str, dest: Path, progress: dict | None) -> None:
                     progress["percent"] = round(100.0 * copied / total_n, 1)
 
 
+def _is_zip_symlink(info: zipfile.ZipInfo) -> bool:
+    # Unix: the upper 16 bits of external_attr are st_mode.
+    mode = (info.external_attr >> 16) & 0xFFFF
+    return stat.S_ISLNK(mode)
+
+
+def _zip_member_parts(name: str) -> list[str]:
+    raw = (name or "").replace("\\", "/")
+    if not raw or raw.startswith("/") or raw.startswith("\\"):
+        raise ValueError(f"Refusing to extract an unsafe path from the archive: {name}")
+    if re.match(r"^[a-zA-Z]:", raw) or raw.startswith("//"):
+        raise ValueError(f"Refusing to extract an unsafe path from the archive: {name}")
+    parts = [p for p in raw.split("/") if p and p != "."]
+    if not parts or any(p == ".." for p in parts):
+        raise ValueError(f"Refusing to extract an unsafe path from the archive: {name}")
+    return parts
+
+
+def validated_zip_dest(info: zipfile.ZipInfo, staging: Path) -> Path:
+    """Return the destination for one archive member, or raise ValueError.
+
+    Rejects absolute paths, `..` components, and paths that resolve outside staging.
+    """
+    staging = staging.resolve()
+    parts = _zip_member_parts(info.filename)
+    dest = staging.joinpath(*parts).resolve()
+    if dest != staging and staging not in dest.parents:
+        raise ValueError(f"Refusing to extract an unsafe path from the archive: {info.filename}")
+    return dest
+
+
+def _symlink_target_is_safe(dest: Path, target: str, staging: Path) -> bool:
+    if not target:
+        return False
+    cleaned = target.replace("\\", "/")
+    if Path(cleaned).is_absolute() or re.match(r"^[a-zA-Z]:", cleaned) or cleaned.startswith("/"):
+        return False
+    if ".." in Path(cleaned).parts:
+        # Still allow a relative link that ultimately stays inside staging.
+        pass
+    resolved = (dest.parent / target).resolve()
+    staging = staging.resolve()
+    return resolved == staging or staging in resolved.parents
+
+
+def extract_zip_safely(zip_path: Path, staging: Path) -> None:
+    """Extract `zip_path` into `staging`, verifying every member stays underneath."""
+    staging = staging.resolve()
+    staging.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            dest = validated_zip_dest(info, staging)
+            if _is_zip_symlink(info):
+                target = zf.read(info).decode("utf-8", "replace")
+                if not _symlink_target_is_safe(dest, target, staging):
+                    raise ValueError(
+                        f"Refusing to extract a symbolic link that leaves the staging folder: {info.filename}"
+                    )
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    if dest.exists() or dest.is_symlink():
+                        dest.unlink()
+                    dest.symlink_to(target)
+                except OSError as exc:
+                    # Windows may refuse symlink creation; skip a safe link rather than fail.
+                    import sys
+
+                    print(f"Could not create symbolic link {info.filename}: {exc}", file=sys.stderr)
+                continue
+            if info.is_dir() or info.filename.endswith("/"):
+                dest.mkdir(parents=True, exist_ok=True)
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info, "r") as src, dest.open("wb") as out:
+                shutil.copyfileobj(src, out)
+
+
 def _extract_zip(zip_path: Path, target: Path) -> None:
     staging = target.parent / (target.name + ".staging")
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(staging)
-    # GitHub zips have a single top-level folder, repo-branch/.
-    entries = [p for p in staging.iterdir() if p.name != "__MACOSX"]
-    source = entries[0] if len(entries) == 1 and entries[0].is_dir() else staging
-    if target.exists():
-        shutil.rmtree(target)
-    shutil.move(str(source), str(target))
+    try:
+        extract_zip_safely(zip_path, staging)
+        # GitHub zips have a single top-level folder, repo-branch/.
+        entries = [p for p in staging.iterdir() if p.name != "__MACOSX"]
+        source = entries[0] if len(entries) == 1 and entries[0].is_dir() else staging
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.move(str(source), str(target))
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
     if staging.exists():
         shutil.rmtree(staging, ignore_errors=True)
-
 
 def update_repo(
     repo_id: str,

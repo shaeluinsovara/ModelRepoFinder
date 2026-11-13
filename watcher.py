@@ -3,11 +3,13 @@
 
 Keeps the original rules:
 - GGUF search sorted by downloads
-- Skip mmproj / projector / clip sidecars
+- Companion files (mmproj / projector / clip / vision-encoder) are offered
+  with multimodal models rather than skipped globally
 - Pick a quant near 70% of the machine cap, preferring Q4_K_M / Q5_K_M / Q4_K_S / Q5_K_S / Q6_K
 - Tags with keep counts
 - Allow-list gate for downloads
 - Retired models are moved, never deleted
+- Whole-repo downloads keep license and README files (only .git is skipped)
 """
 from __future__ import annotations
 
@@ -44,7 +46,8 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 HF_TOKEN_FILE = ROOT / ".hf_token"
-VERSION = "1.3"
+VERSION = "1.4"
+SNAPSHOT_IGNORE_DEFAULT = [".git*"]
 USER_AGENT = f"model-repo-finder/{VERSION}"
 HF = HfApi(headers={"User-Agent": USER_AGENT})
 
@@ -334,32 +337,254 @@ def base_dir(cfg: dict, root: Path | None = None) -> Path:
 
 
 def incoming_dir(cfg: dict, machine: str, tag: str, root: Path | None = None) -> Path:
-    paths = cfg.get("paths") or {}
-    incoming = paths.get("incoming") or "incoming"
-    return base_dir(cfg, root) / incoming / machine / tag
+    machine = _safe_component(machine, "computer")
+    tag = _safe_component(tag, "category")
+    dest = incoming_root(cfg, root) / machine / tag
+    assert_contained(dest, incoming_root(cfg, root))
+    return dest
 
 
 def retired_dir(cfg: dict, machine: str, tag: str, root: Path | None = None) -> Path:
-    paths = cfg.get("paths") or {}
-    retired = paths.get("retired") or "retired"
-    return base_dir(cfg, root) / retired / machine / tag
+    machine = _safe_component(machine, "computer")
+    tag = _safe_component(tag, "category")
+    dest = retired_root(cfg, root) / machine / tag
+    assert_contained(dest, retired_root(cfg, root))
+    return dest
 
 
 def github_incoming_dir(cfg: dict, category: str, root: Path | None = None) -> Path:
-    paths = cfg.get("paths") or {}
-    incoming = paths.get("incoming") or "incoming"
-    return base_dir(cfg, root) / incoming / "github" / category
+    category = _safe_component(category, "category")
+    dest = incoming_root(cfg, root) / "github" / category
+    assert_contained(dest, incoming_root(cfg, root))
+    return dest
 
 
 def github_retired_dir(cfg: dict, category: str, root: Path | None = None) -> Path:
-    paths = cfg.get("paths") or {}
-    retired = paths.get("retired") or "retired"
-    return base_dir(cfg, root) / retired / "github" / category
+    category = _safe_component(category, "category")
+    dest = retired_root(cfg, root) / "github" / category
+    assert_contained(dest, retired_root(cfg, root))
+    return dest
 
 
 def is_sidecar(path: str) -> bool:
-    name = path.rsplit("/", 1)[-1]
-    return bool(SKIP_NAME_RE.search(name))
+    """True if this looks like a multimodal companion (mmproj, projector, CLIP, vision-encoder)."""
+    return companion_role(path) is not None
+
+
+def companion_role(path: str) -> str | None:
+    """Return the companion kind, or None if this is an ordinary file."""
+    name = (path or "").rsplit("/", 1)[-1]
+    if not name:
+        return None
+    if re.search(r"(^|[/_.-])mmproj([/_.-]|$)", name, re.I):
+        return "mmproj"
+    if re.search(r"(^|[/_.-])projector([/_.-]|$)", name, re.I):
+        return "projector"
+    if re.search(r"(^|[/_.-])vision[_.-]?encoder([/_.-]|$)", name, re.I):
+        return "vision-encoder"
+    if re.search(r"(^|[/_.-])clip([/_.-]|$)", name, re.I):
+        return "clip"
+    return None
+
+
+# Extra destination buckets the UI may send that are not in machines.yaml.
+SPECIAL_HF_CATEGORIES = frozenset({"manual", "misc"})
+SPECIAL_GH_CATEGORIES = frozenset({"misc"})
+
+
+def is_safe_path_component(name: str) -> bool:
+    """True if `name` is a single folder name with no traversal or absolute-path tricks."""
+    if not name or not isinstance(name, str):
+        return False
+    if name in {".", ".."}:
+        return False
+    if "/" in name or "\\" in name:
+        return False
+    if any(ord(c) < 32 or c == "\x7f" for c in name):
+        return False
+    if ".." in name:
+        return False
+    # Windows drive letters and UNC-style prefixes.
+    if len(name) >= 2 and name[1] == ":":
+        return False
+    try:
+        if Path(name).is_absolute():
+            return False
+        if Path(name).parts != (name,):
+            return False
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _safe_component(name: str, kind: str = "folder") -> str:
+    name = (name or "").strip()
+    if not is_safe_path_component(name):
+        raise ValueError(f"That {kind} name is not allowed.")
+    return name
+
+
+def validate_category_key(
+    cfg: dict,
+    key: str,
+    scope: str = "hf",
+    extra: set[str] | frozenset[str] | None = None,
+) -> str:
+    """Reject path tricks and unknown category keys. Returns the cleaned key."""
+    key = _safe_component(key, "category")
+    known = set(all_hf_tags(cfg) if scope == "hf" else all_github_tags(cfg))
+    if extra:
+        known |= set(extra)
+    else:
+        known |= set(SPECIAL_HF_CATEGORIES if scope == "hf" else SPECIAL_GH_CATEGORIES)
+    if key not in known:
+        raise ValueError("Unknown category.")
+    return key
+
+
+def validate_machine_key(cfg: dict, key: str, *, must_be_enabled: bool = False) -> str:
+    """Reject path tricks and unknown computer keys."""
+    key = _safe_component(key, "computer")
+    machines = cfg.get("machines") or {}
+    if key not in machines:
+        raise ValueError(f"Unknown machine: {key}")
+    if must_be_enabled and key not in enabled_machines(cfg):
+        raise ValueError(f"Unknown machine: {key}")
+    return key
+
+
+def assert_contained(path: Path, root: Path) -> Path:
+    """Resolve `path` and require it to stay under `root`. Raises ValueError if not."""
+    resolved = path.resolve()
+    root_res = root.resolve()
+    if resolved != root_res and root_res not in resolved.parents:
+        raise ValueError("That path is not inside the intended folder.")
+    return resolved
+
+
+def incoming_root(cfg: dict, root: Path | None = None) -> Path:
+    paths = cfg.get("paths") or {}
+    incoming = _safe_component(paths.get("incoming") or "incoming", "folder")
+    return base_dir(cfg, root) / incoming
+
+
+def retired_root(cfg: dict, root: Path | None = None) -> Path:
+    paths = cfg.get("paths") or {}
+    retired = _safe_component(paths.get("retired") or "retired", "folder")
+    return base_dir(cfg, root) / retired
+
+
+def find_companions(files: list[dict], pick: dict | None) -> list[dict]:
+    """If a repo has multimodal companion files, pick the ones that match `pick`.
+
+    Ordinary text GGUFs have no companions and nothing is added. When mmproj
+    (or projector / CLIP / vision-encoder) files are present, the matching
+    companion for the recommended quant is returned so it can be offered and
+    downloaded together.
+    """
+    if not pick:
+        return []
+    pick_path = pick.get("path") or ""
+    if not pick_path or pick_path == "(whole model)" or companion_role(pick_path):
+        return []
+    by_role: dict[str, list[dict]] = {}
+    for f in files or []:
+        path = f.get("path") or ""
+        role = companion_role(path)
+        if not role:
+            continue
+        row = dict(f)
+        row["role"] = role
+        by_role.setdefault(role, []).append(row)
+    if not by_role:
+        return []
+
+    pick_name = pick_path.rsplit("/", 1)[-1].lower()
+    pick_dir = "/".join(pick_path.split("/")[:-1])
+
+    def _score(entry: dict) -> tuple:
+        path = entry.get("path") or ""
+        name = path.rsplit("/", 1)[-1].lower()
+        same_dir = 1 if "/".join(path.split("/")[:-1]) == pick_dir else 0
+        prefix = 0
+        for a, b in zip(pick_name, name):
+            if a == b:
+                prefix += 1
+            else:
+                break
+        # Typical multimodal packs ship an f16 mmproj.
+        pref = 1 if re.search(r"(^|[/_.-])(f16|fp16)([/_.-]|$)", name) else 0
+        return (same_dir, prefix, pref, -(entry.get("size") or 0))
+
+    chosen: list[dict] = []
+    for role in ("mmproj", "projector", "clip", "vision-encoder"):
+        group = by_role.get(role) or []
+        if not group:
+            continue
+        if len(group) == 1:
+            chosen.append(group[0])
+        else:
+            chosen.append(max(group, key=_score))
+    return chosen
+
+
+def estimate_runtime_memory_gb(stored_gb: float, fmt: str = "gguf") -> float:
+    """Very rough estimated RAM/VRAM to load and run the weights.
+
+    This is a first approximation: the stored file size plus a little room
+    for context (the KV cache) and the runtime itself. Actual use depends
+    on context length, offload, architecture, and the app. Always label
+    the result as a rough estimate in the interface.
+    """
+    stored_gb = max(0.0, float(stored_gb or 0))
+    fmt = (fmt or "").lower()
+    if fmt in {"gguf", "mlx"}:
+        return round(stored_gb * 1.15 + 0.5, 1)
+    return round(stored_gb * 1.25 + 0.5, 1)
+
+
+def describe_fit(
+    stored_gb: float,
+    max_gb: float | None,
+    estimated_ram_gb: float | None = None,
+    *,
+    whole_gb: float | None = None,
+    pick_fits: bool | None = None,
+    fmt: str = "gguf",
+) -> dict:
+    """Distinguish on-disk size from a rough estimated memory need."""
+    stored_gb = float(stored_gb or 0)
+    if estimated_ram_gb is None:
+        estimated_ram_gb = estimate_runtime_memory_gb(stored_gb, fmt)
+    over_cap = bool(max_gb and stored_gb > float(max_gb))
+    whole_over = bool(max_gb and whole_gb and float(whole_gb) > float(max_gb))
+    warning = ""
+    if max_gb and (over_cap or whole_over):
+        if pick_fits and whole_over and not over_cap:
+            warning = (
+                f"On disk the whole folder is about {_size_label(float(whole_gb))}, "
+                f"which is over this computer's {_size_label(float(max_gb))} size cap. "
+                f"The suggested GGUF file is {_size_label(stored_gb)} on disk and should fit. "
+                f"Estimated memory to run that file: about {_size_label(float(estimated_ram_gb))} "
+                f"(rough estimate). You can still download either one."
+            )
+        else:
+            warning = (
+                f"On disk this is about {_size_label(stored_gb)} "
+                f"(this computer's size cap is {_size_label(float(max_gb))}). "
+                f"Estimated memory to run: about {_size_label(float(estimated_ram_gb))} "
+                f"(rough estimate). You can still download it if you have the disk space, "
+                f"but it may not run well here. Actual memory use also depends on "
+                f"context length and the app you run it in."
+            )
+    return {
+        "stored_size_gb": stored_gb,
+        "estimated_ram_gb": estimated_ram_gb,
+        "estimate_label": "rough estimate",
+        "over_cap": over_cap,
+        "whole_over_cap": whole_over,
+        "warning": warning,
+    }
 
 
 def id_blocked(model_id: str, exclude_id_substrings: list[str]) -> bool:
@@ -826,6 +1051,7 @@ def _rank_models(
             extra_text = _fetch_card_text(mid)
             if not matches_keywords(m, keywords, extra_text):
                 return None
+        files: list[dict] = []
         try:
             if fmt == "gguf":
                 files = list_gguf_files(mid)
@@ -854,6 +1080,8 @@ def _rank_models(
         if not pick:
             return None
         fmt_name, app_note = guess_format_and_note(m, pick)
+        companions = find_companions(files, pick)
+        estimated = estimate_runtime_memory_gb(pick["size_gb"], fmt_name)
         return {
             "id": mid,
             "downloads": m.get("downloads") or 0,
@@ -868,8 +1096,13 @@ def _rank_models(
             "file_path": pick["path"],
             "size": pick.get("size") or 0,
             "size_gb": pick["size_gb"],
+            "stored_size_gb": pick["size_gb"],
+            "estimated_ram_gb": estimated,
+            "estimate_label": "rough estimate",
             "format": fmt_name,
             "app_note": app_note,
+            "companions": companions,
+            "is_multimodal": bool(companions),
             "allowed": mid in allow,
             "tag": tag_name,
             "error": None,
@@ -1149,7 +1382,8 @@ def download_repo(
     else:
         target = dest_dir
     target.mkdir(parents=True, exist_ok=True)
-    patterns = list(ignore_patterns) if ignore_patterns is not None else [".git*", "LICENSE*", "license*"]
+    # Only skip .git. License files and README model cards stay with the weights.
+    patterns = list(ignore_patterns) if ignore_patterns is not None else list(SNAPSHOT_IGNORE_DEFAULT)
 
     def _do() -> Path:
         DownloadProgress.sink = progress
@@ -1178,33 +1412,145 @@ def download_mlx(
 
 
 
-def load_hf_token(root: Path | None = None) -> str:
-    path = (root or ROOT) / ".hf_token"
+
+# Service / username used if the optional `keyring` package is installed.
+_KEYRING_SERVICE = "ModelRepoFinder"
+_KEYRING_HF = "hf_token"
+_KEYRING_GH = "github_token"
+
+
+def _log_secret_issue(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+def _keyring_get(username: str) -> str:
+    try:
+        import keyring  # optional; not a required dependency
+    except Exception:
+        return ""
+    try:
+        value = keyring.get_password(_KEYRING_SERVICE, username)
+    except Exception as exc:  # noqa: BLE001
+        _log_secret_issue(f"Could not read the token from the system keychain: {exc}")
+        return ""
+    return (value or "").strip()
+
+
+def _keyring_set(username: str, token: str) -> bool:
+    """Save or delete a token in the system keychain. Returns True on success."""
+    try:
+        import keyring
+    except Exception:
+        return False
+    try:
+        if token:
+            keyring.set_password(_KEYRING_SERVICE, username, token)
+        else:
+            try:
+                keyring.delete_password(_KEYRING_SERVICE, username)
+            except Exception:
+                # Nothing stored is fine.
+                pass
+        return True
+    except Exception as exc:  # noqa: BLE001
+        _log_secret_issue(f"Could not store the token in the system keychain: {exc}")
+        return False
+
+
+def harden_secret_file(path: Path) -> None:
+    """Restrict a token file to the current user. Failures are logged, not fatal.
+
+    On macOS and Linux this is chmod 0600. On Windows, icacls is used to
+    drop inherited ACLs and grant only the current user full access.
+    """
+    import os
+    import subprocess
+
+    try:
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        _log_secret_issue(f"Could not set permissions on {path.name}: {exc}")
+    if sys.platform != "win32":
+        return
+    user = (
+        os.environ.get("USERNAME")
+        or os.environ.get("USER")
+        or ""
+    )
+    if not user:
+        try:
+            user = os.getlogin()
+        except OSError:
+            user = ""
+    if not user:
+        _log_secret_issue("Could not harden the token file ACL: no current user name.")
+        return
+    try:
+        result = subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:F"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "icacls failed").strip()
+            _log_secret_issue(f"Could not harden the token file ACL: {err[:300]}")
+    except Exception as exc:  # noqa: BLE001
+        _log_secret_issue(f"Could not harden the token file ACL: {exc}")
+
+
+def _read_token_file(path: Path) -> str:
     if not path.exists():
         return ""
     try:
         return path.read_text(encoding="utf-8").strip()
-    except OSError:
+    except OSError as exc:
+        _log_secret_issue(f"Could not read {path.name}: {exc}")
         return ""
 
 
-def save_hf_token(token: str, root: Path | None = None) -> None:
-    import os
-
-    path = (root or ROOT) / ".hf_token"
+def _write_token_file(path: Path, token: str) -> None:
     token = (token or "").strip()
     if not token:
         if path.exists():
             try:
                 path.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                _log_secret_issue(f"Could not remove {path.name}: {exc}")
         return
     path.write_text(token + "\n", encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    harden_secret_file(path)
+
+
+def load_secret(filename: str, keyring_name: str, root: Path | None = None) -> str:
+    """Load a token from the optional keychain, falling back to a local file."""
+    value = _keyring_get(keyring_name)
+    if value:
+        return value
+    return _read_token_file((root or ROOT) / filename)
+
+
+def save_secret(filename: str, keyring_name: str, token: str, root: Path | None = None) -> None:
+    """Prefer the system keychain when `keyring` is installed; otherwise a hardened file."""
+    path = (root or ROOT) / filename
+    token = (token or "").strip()
+    if _keyring_set(keyring_name, token):
+        # Migrated to the keychain — do not leave a plaintext copy behind.
+        if path.exists():
+            try:
+                path.unlink()
+            except OSError as exc:
+                _log_secret_issue(f"Could not remove the old token file {path.name}: {exc}")
+        return
+    _write_token_file(path, token)
+
+
+def load_hf_token(root: Path | None = None) -> str:
+    return load_secret(".hf_token", _KEYRING_HF, root)
+
+
+def save_hf_token(token: str, root: Path | None = None) -> None:
+    save_secret(".hf_token", _KEYRING_HF, token, root)
 
 
 def _hf_api(token: str | None = None) -> HfApi:
@@ -1225,6 +1571,12 @@ _HF_SKIP_FIRST = {
     "spaces",
     "models",
 }
+
+
+def _valid_hf_name_part(part: str) -> bool:
+    if not part or part in {".", ".."} or ".." in part:
+        return False
+    return bool(re.match(r"^[A-Za-z0-9._-]+$", part))
 
 
 def parse_hf_input(text: str) -> str:
@@ -1264,7 +1616,7 @@ def parse_hf_input(text: str) -> str:
         org, name = parts[0], parts[1]
         if org in _HF_SKIP_FIRST:
             raise ValueError("That does not look like a model page. Paste a link like https://huggingface.co/org/name.")
-        if not re.match(r"^[A-Za-z0-9._-]+$", org) or not re.match(r"^[A-Za-z0-9._-]+$", name):
+        if not _valid_hf_name_part(org) or not _valid_hf_name_part(name):
             raise ValueError("That does not look like a model name. Paste a link or org/name.")
         return f"{org}/{name}"
 
@@ -1275,7 +1627,7 @@ def parse_hf_input(text: str) -> str:
     if len(parts) < 2:
         raise ValueError("Please paste a Hugging Face link or an org/name, like openai/whisper-tiny.")
     org, name = parts[0], parts[1]
-    if not re.match(r"^[A-Za-z0-9._-]+$", org) or not re.match(r"^[A-Za-z0-9._-]+$", name):
+    if not _valid_hf_name_part(org) or not _valid_hf_name_part(name):
         raise ValueError("That does not look like a model name. Paste a link or org/name.")
     return f"{org}/{name}"
 
@@ -1471,32 +1823,31 @@ def inspect_hf_repo(repo_id: str, token: str | None = None, max_gb: float | None
     pick_stub = {"format": fmt_guess, "path": "(whole model)", "size": weight_size or total, "size_gb": (weight_size or total) / (1024**3)}
     fmt_name, app_note = guess_format_and_note(model_brief, pick_stub)
 
-    gguf_files = [f for f in files if f["format"] == "gguf" and not f.get("sidecar")]
+    # Quality-setting options are ordinary GGUFs; companions are offered separately.
+    all_gguf = [f for f in files if f["format"] == "gguf"]
+    gguf_files = [f for f in all_gguf if not f.get("sidecar")]
+    for f in gguf_files:
+        f["companions"] = find_companions(files, f)
     default = default_gguf_pick(gguf_files, max_gb) if gguf_files else None
+    if default:
+        default = dict(default)
+        default["companions"] = find_companions(files, default)
+    companions = (default.get("companions") if default else None) or find_companions(files, pick_stub)
     has_sft = any(f["format"] == "safetensors" for f in files)
     has_bin = any(f["path"].lower().endswith(".bin") and f["format"] == "pytorch" for f in files)
-    compare_gb = (default["size_gb"] if default else ((weight_size or total) / (1024**3)))
-    over_cap = bool(max_gb and compare_gb > float(max_gb))
-    whole_over = bool(max_gb and ((weight_size or total) / (1024**3)) > float(max_gb))
-
-    warning = ""
-    if over_cap or whole_over:
-        shown = compare_gb if default else ((weight_size or total) / (1024**3))
-        warning = (
-            f"This is about {_size_label(shown)}, which is larger than this computer's "
-            f"{_size_label(float(max_gb))} cap. You can still download it if you have the "
-            "disk space, but it may not run well here."
-        )
-        if default and whole_over and not (default["size_gb"] > float(max_gb or 0)):
-            warning = (
-                f"The whole repo is about {_size_label((weight_size or total) / (1024**3))}, "
-                f"which is over this computer's {_size_label(float(max_gb))} cap. The suggested "
-                f"GGUF file is {_size_label(default['size_gb'])} and should fit. You can still "
-                "download either one."
-            )
-            over_cap = False  # the default pick fits; still mention whole-repo size in warning? 
-            # Keep over_cap True only if the chosen default is over. The warning can still show.
-            warning = warning  # default fits
+    stored_gb = (default["size_gb"] if default else ((weight_size or total) / (1024**3)))
+    whole_gb = (weight_size or total) / (1024**3) if (weight_size or total) else 0
+    pick_fits = bool(default and max_gb and default["size_gb"] <= float(max_gb))
+    fmt_for_est = (default.get("format") if default else fmt_name) or "gguf"
+    est = estimate_runtime_memory_gb(stored_gb, fmt_for_est)
+    fit = describe_fit(
+        stored_gb,
+        max_gb,
+        est,
+        whole_gb=whole_gb,
+        pick_fits=pick_fits,
+        fmt=fmt_for_est,
+    )
 
     return {
         "id": repo_id,
@@ -1518,13 +1869,18 @@ def inspect_hf_repo(repo_id: str, token: str | None = None, max_gb: float | None
         "has_gguf": bool(gguf_files),
         "gguf_files": gguf_files,
         "default_pick": default,
+        "companions": companions,
+        "is_multimodal": bool(companions),
         "has_safetensors": has_sft,
         "has_bin": has_bin,
         "suggest_skip_bin": bool(has_sft and has_bin),
-        "over_cap": bool(max_gb and ((default["size_gb"] if default else (weight_size or total) / (1024**3)) > float(max_gb))),
-        "whole_over_cap": whole_over,
+        "over_cap": fit["over_cap"],
+        "whole_over_cap": fit["whole_over_cap"],
         "max_model_gb": max_gb,
-        "warning": warning,
+        "stored_size_gb": fit["stored_size_gb"],
+        "estimated_ram_gb": fit["estimated_ram_gb"],
+        "estimate_label": fit["estimate_label"],
+        "warning": fit["warning"],
         "message": (
             f"{repo_id} is gated. Before downloading, open the model page in your browser, "
             "accept the license, and paste a Hugging Face access token below."

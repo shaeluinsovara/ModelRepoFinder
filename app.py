@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import sys
 import threading
 import traceback
@@ -70,6 +71,69 @@ _CFG_CACHE: dict | None = None
 _CFG_LOCK = threading.Lock()
 # Set by --base-folder so tests and one-off runs do not rewrite machines.yaml.
 _SESSION_BASE: str | None = None
+
+# Per-launch request token, injected into the served page and required on POST.
+CSRF_HEADER = "X-MRF-Token"
+CSRF_PLACEHOLDER = "__MRF_REQUEST_TOKEN__"
+MAX_BODY = 1 * 1024 * 1024  # 1 MB
+_CSRF_TOKEN = secrets.token_urlsafe(32)
+
+
+class BodyTooLarge(ValueError):
+    """Request body (or Content-Length) exceeded MAX_BODY."""
+
+
+def reset_csrf_token(token: str | None = None) -> str:
+    """Install a new (or given) per-launch token. Used at startup and in tests."""
+    global _CSRF_TOKEN
+    _CSRF_TOKEN = token or secrets.token_urlsafe(32)
+    return _CSRF_TOKEN
+
+
+def _server_port(handler) -> int:
+    try:
+        return int(handler.server.server_address[1])
+    except Exception:  # noqa: BLE001
+        return 8765
+
+
+def _allowed_hosts(port: int) -> set[str]:
+    return {
+        f"127.0.0.1:{port}",
+        f"localhost:{port}",
+        f"[::1]:{port}",
+        "127.0.0.1",
+        "localhost",
+        "[::1]",
+    }
+
+
+def _allowed_origins(port: int) -> set[str]:
+    return {
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+        f"http://[::1]:{port}",
+    }
+
+
+def request_boundary_error(handler, *, mutating: bool) -> tuple[int, str] | None:
+    """Return (status, message) if the request should be rejected."""
+    port = _server_port(handler)
+    host = (handler.headers.get("Host") or "").strip().lower()
+    if host not in _allowed_hosts(port):
+        return 403, "Rejected: unexpected Host header."
+    origin = (handler.headers.get("Origin") or "").strip().rstrip("/").lower()
+    if origin and origin not in {o.lower() for o in _allowed_origins(port)}:
+        return 403, "Rejected: unexpected Origin header."
+    if mutating:
+        token = (
+            handler.headers.get(CSRF_HEADER)
+            or handler.headers.get("X-CSRF-Token")
+            or ""
+        )
+        if not token or not secrets.compare_digest(str(token), str(_CSRF_TOKEN)):
+            return 403, "Rejected: missing or invalid request token."
+    return None
 
 
 def _cfg() -> dict:
@@ -288,7 +352,19 @@ def _run_downloads(machine: str, items: list[dict]) -> None:
 
     for item in items:
         repo_id = (item.get("id") or "").strip()
-        tag = (item.get("tag") or "misc").strip()
+        try:
+            tag = W.validate_category_key(
+                cfg,
+                (item.get("tag") or "misc").strip(),
+                scope="hf",
+                extra=W.SPECIAL_HF_CATEGORIES,
+            )
+            W.validate_machine_key(cfg, machine)
+        except ValueError as exc:
+            with _LOCK:
+                _STATE["download"]["log"].append(f"Skipped {item.get('id') or 'item'}: {exc}")
+            failed.append(dict(item))
+            continue
         fmt = (item.get("format") or "gguf").lower()
         file_path = item.get("file_path") or item.get("file") or ""
         if not repo_id:
@@ -298,10 +374,17 @@ def _run_downloads(machine: str, items: list[dict]) -> None:
                 _STATE["download"]["log"].append(f"Skipped {repo_id}: not on the approve list.")
             continue
         token = W.load_hf_token(ROOT) or None
-        if tag == "manual":
-            dest = W.manual_dest(cfg, machine, repo_id, ROOT)
-        else:
-            dest = W.incoming_dir(cfg, machine, tag, ROOT)
+        try:
+            if tag == "manual":
+                dest = W.manual_dest(cfg, machine, repo_id, ROOT)
+            else:
+                dest = W.incoming_dir(cfg, machine, tag, ROOT)
+            W.assert_contained(dest, W.incoming_root(cfg, ROOT))
+        except ValueError as exc:
+            with _LOCK:
+                _STATE["download"]["log"].append(f"Skipped {repo_id}: {exc}")
+            failed.append(dict(item))
+            continue
         label = f"{repo_id} ({fmt})"
         with _LOCK:
             _STATE["download"]["current"] = {
@@ -332,6 +415,20 @@ def _run_downloads(machine: str, items: list[dict]) -> None:
                     ignore_patterns=ignore,
                     nested=(tag != "manual"),
                 )
+            companions = item.get("companions") or []
+            if companions and item.get("download_companions", True) and not whole:
+                for comp in companions:
+                    cpath = (comp.get("path") if isinstance(comp, dict) else "") or ""
+                    if not cpath:
+                        continue
+                    role = (comp.get("role") if isinstance(comp, dict) else "") or "companion"
+                    with _LOCK:
+                        _STATE["download"]["log"].append(
+                            f"Also downloading the matching {role} file ({cpath.rsplit('/', 1)[-1]})…"
+                        )
+                    cdest = W.download_gguf(repo_id, cpath, dest, progress=progress, token=token)
+                    with _LOCK:
+                        _STATE["download"]["log"].append(f"Saved companion {cdest}")
             with _LOCK:
                 _STATE["download"]["log"].append(f"Saved {path}")
                 _STATE["download"]["percent"] = 100
@@ -432,7 +529,14 @@ def _run_github_downloads(items: list[dict], action: str = "download") -> None:
             with _LOCK:
                 _STATE["github_download"]["log"].append(f"Skipped {repo_id}: not on the approve list.")
             continue
-        dest = W.github_incoming_dir(cfg, tag, ROOT)
+        try:
+            tag = W._safe_component(tag, "category")
+            dest = W.github_incoming_dir(cfg, tag, ROOT)
+            W.assert_contained(dest, W.incoming_root(cfg, ROOT))
+        except ValueError as exc:
+            with _LOCK:
+                _STATE["github_download"]["log"].append(f"Skipped {repo_id}: {exc}")
+            continue
         with _LOCK:
             _STATE["github_download"]["current"] = {"id": repo_id, "tag": tag}
             _STATE["github_download"]["message"] = f"{verb} {repo_id}…"
@@ -480,10 +584,12 @@ class Handler(SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
+        denied = request_boundary_error(self, mutating=False)
+        if denied:
+            return self._json(denied[0], {"error": denied[1]})
         parsed = self.path.split("?", 1)[0]
         if parsed in {"/", "/index.html"}:
-            self.path = "/index.html"
-            return super().do_GET()
+            return self._serve_index()
         if parsed == "/api/info":
             return self._json(200, _info_payload())
         if parsed == "/api/job":
@@ -500,10 +606,38 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, payload)
         return super().do_GET()
 
+    def _serve_index(self) -> None:
+        path = WEB / "index.html"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return self._json(500, {"error": f"Could not read the app page: {exc}"})
+        text = text.replace(CSRF_PLACEHOLDER, _CSRF_TOKEN)
+        blob = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(blob)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(blob)
+
     def do_POST(self) -> None:  # noqa: N802
+        denied = request_boundary_error(self, mutating=True)
+        if denied:
+            # If Content-Length is huge, close rather than hanging on a body we will not use.
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if length > MAX_BODY:
+                self.close_connection = True
+            return self._json(denied[0], {"error": denied[1]})
         parsed = self.path.split("?", 1)[0]
         try:
             body = self._read_json()
+        except BodyTooLarge as exc:
+            self.close_connection = True
+            return self._json(413, {"error": str(exc) or "Request body is too large."})
         except ValueError as exc:
             return self._json(400, {"error": str(exc)})
         routes = {
@@ -525,8 +659,24 @@ class Handler(SimpleHTTPRequestHandler):
         return handler(body)
 
     def _read_json(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_len = self.headers.get("Content-Length")
+        if not raw_len:
+            return {}
+        try:
+            length = int(raw_len)
+        except ValueError as exc:
+            raise ValueError("Invalid Content-Length.") from exc
+        if length < 0:
+            raise ValueError("Invalid Content-Length.")
+        if length > MAX_BODY:
+            raise BodyTooLarge(
+                f"Request body is too large (limit is {MAX_BODY} bytes)."
+            )
         raw = self.rfile.read(length) if length else b"{}"
+        if len(raw) > MAX_BODY:
+            raise BodyTooLarge(
+                f"Request body is too large (limit is {MAX_BODY} bytes)."
+            )
         if not raw:
             return {}
         try:
@@ -690,6 +840,10 @@ class Handler(SimpleHTTPRequestHandler):
     def _handle_download(self, body: dict) -> None:
         cfg = _cfg()
         machine = str(body.get("machine") or _current_machine())
+        try:
+            machine = W.validate_machine_key(cfg, machine, must_be_enabled=True)
+        except ValueError as exc:
+            return self._json(400, {"error": str(exc)})
         items = body.get("items") or []
         if not isinstance(items, list) or not items:
             return self._json(400, {"error": "Pick at least one model to approve and download."})
@@ -697,16 +851,47 @@ class Handler(SimpleHTTPRequestHandler):
         for item in items:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
+            try:
+                tag = W.validate_category_key(
+                    cfg,
+                    str(item.get("tag") or "misc"),
+                    scope="hf",
+                    extra=W.SPECIAL_HF_CATEGORIES,
+                )
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
+            companions = item.get("companions") or []
+            if companions and not isinstance(companions, list):
+                return self._json(400, {"error": "companions must be a list."})
+            clean_comps = []
+            for comp in companions:
+                if not isinstance(comp, dict) or not comp.get("path"):
+                    continue
+                # Companion paths are Hugging Face filenames, not local folder names.
+                # Still reject absolute / traversal forms so they cannot be misused.
+                cpath = str(comp["path"])
+                if Path(cpath).is_absolute() or ".." in Path(cpath).parts:
+                    return self._json(400, {"error": "That companion file path is not allowed."})
+                clean_comps.append(
+                    {
+                        "path": cpath,
+                        "size": comp.get("size") or 0,
+                        "size_gb": comp.get("size_gb") or 0,
+                        "role": str(comp.get("role") or "companion"),
+                    }
+                )
             clean.append(
                 {
                     "id": str(item["id"]),
-                    "tag": str(item.get("tag") or "misc"),
+                    "tag": tag,
                     "format": str(item.get("format") or "gguf"),
                     "file": str(item.get("file") or ""),
                     "file_path": str(item.get("file_path") or item.get("file") or ""),
                     "size": item.get("size") or 0,
                     "whole_repo": bool(item.get("whole_repo")),
                     "skip_bin_duplicates": bool(item.get("skip_bin_duplicates")),
+                    "companions": clean_comps,
+                    "download_companions": bool(item.get("download_companions", True)),
                 }
             )
         if not clean:
@@ -787,6 +972,7 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json(200, {"ok": True, "github_refresh": _job_public("github_refresh")})
 
     def _handle_github_download(self, body: dict) -> None:
+        cfg = _cfg()
         items = body.get("items") or []
         if not isinstance(items, list) or not items:
             return self._json(400, {"error": "Pick at least one repository to approve and download."})
@@ -794,10 +980,19 @@ class Handler(SimpleHTTPRequestHandler):
         for item in items:
             if not isinstance(item, dict) or not item.get("id"):
                 continue
+            try:
+                tag = W.validate_category_key(
+                    cfg,
+                    str(item.get("tag") or item.get("category") or "misc"),
+                    scope="github",
+                    extra=W.SPECIAL_GH_CATEGORIES,
+                )
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
             clean.append(
                 {
                     "id": str(item["id"]),
-                    "tag": str(item.get("tag") or item.get("category") or "misc"),
+                    "tag": tag,
                     "default_branch": str(item.get("default_branch") or "main"),
                 }
             )
@@ -826,6 +1021,10 @@ class Handler(SimpleHTTPRequestHandler):
                 repo_id = name
         if not (repo_id and tag):
             return self._json(400, {"error": "Need a repository and a category to update."})
+        try:
+            tag = W._safe_component(tag, "category")
+        except ValueError as exc:
+            return self._json(400, {"error": str(exc)})
         item = {
             "id": repo_id,
             "tag": tag,
@@ -923,6 +1122,7 @@ def main() -> int:
 
     host = "127.0.0.1"
     port = args.port
+    reset_csrf_token()
     try:
         server = ThreadingHTTPServer((host, port), Handler)
     except OSError as exc:

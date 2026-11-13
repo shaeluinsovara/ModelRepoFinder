@@ -232,7 +232,7 @@
 </head>
 <body>
   <header>
-    <h1>ModelRepoFinder <span class="ver" id="version-label">v1.3</span></h1>
+    <h1>ModelRepoFinder <span class="ver" id="version-label">v1.4</span></h1>
     <p class="tagline">Find open-source models and GitHub projects that fit your house, then download only the ones you approve. Nothing leaves this computer except requests to Hugging Face or GitHub.</p>
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tab-hf" aria-selected="true" aria-controls="pane-hf">Hugging Face models</button>
@@ -390,6 +390,7 @@
     </footer>
   </main>
   <script>
+    window.MRF_TOKEN = "__MRF_REQUEST_TOKEN__";
     const $ = (id) => document.getElementById(id);
     let info = null;
     let pollTimer = null;
@@ -416,6 +417,12 @@
     };
 
     async function api(path, opts) {
+      opts = opts || {};
+      const headers = Object.assign({}, opts.headers || {});
+      if (window.MRF_TOKEN) {
+        headers["X-MRF-Token"] = window.MRF_TOKEN;
+      }
+      opts = Object.assign({}, opts, { headers: headers });
       const res = await fetch(path, opts);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || ("Request failed (" + res.status + ")"));
@@ -746,6 +753,10 @@
       box.dataset.file = model.file || "";
       box.dataset.filePath = model.file_path || model.file || "";
       box.dataset.size = model.size || 0;
+      if (model.companions && model.companions.length) {
+        box.dataset.companions = JSON.stringify(model.companions);
+        box.dataset.downloadCompanions = "1";
+      }
       const body = document.createElement("div");
       const h = document.createElement("h3");
       const link = document.createElement("a");
@@ -767,9 +778,26 @@
       const meta = document.createElement("p");
       meta.className = "meta";
       const fileLabel = model.file_path === "(whole model)" || model.file === "(whole model)" ? "whole model" : (model.file || model.file_path);
-      meta.textContent = downloads(model.downloads) + "  ·  " + fileLabel + "  ·  " + fmtBytes(model.size_gb, model.size);
+      let metaText = downloads(model.downloads) + "  ·  " + fileLabel + "  ·  on disk: " + fmtBytes(model.size_gb, model.size);
+      if (model.companions && model.companions.length) {
+        const roles = model.companions.map((c) => {
+          const name = (c.path || "").split("/").pop();
+          const role = c.role || "companion";
+          return role + " " + name + " (" + fmtBytes(c.size_gb, c.size) + ")";
+        });
+        metaText += "  ·  + " + roles.join(", ");
+      }
+      meta.textContent = metaText;
       body.appendChild(h);
       body.appendChild(meta);
+      if (model.estimated_ram_gb) {
+        const fit = document.createElement("p");
+        fit.className = "hint";
+        fit.textContent = "On disk: " + fmtBytes(model.size_gb, model.size)
+          + ". Estimated memory to run: about " + fmtBytes(model.estimated_ram_gb)
+          + " (rough estimate). Actual use depends on context length and the app you run it in.";
+        body.appendChild(fit);
+      }
       if (model.app_note) {
         const note = document.createElement("p");
         note.className = "hint";
@@ -836,7 +864,12 @@
     }
 
     function itemFromDataset(ds) {
-      return { id: ds.id, tag: ds.tag, format: ds.format, file: ds.file, file_path: ds.filePath, size: Number(ds.size || 0) };
+      const item = { id: ds.id, tag: ds.tag, format: ds.format, file: ds.file, file_path: ds.filePath, size: Number(ds.size || 0) };
+      if (ds.companions) {
+        try { item.companions = JSON.parse(ds.companions); } catch (err) { item.companions = []; }
+        item.download_companions = ds.downloadCompanions !== "0";
+      }
+      return item;
     }
     function downloadSelected(panel, starter) {
       const boxes = [...panel.querySelectorAll("input[type=checkbox]")].filter((b) => b.checked);
@@ -1121,8 +1154,11 @@
       meta.className = "meta";
       const bits = [];
       bits.push("license: " + (data.license || "Unknown"));
-      if (data.total_size) bits.push("total " + fmtBytes(data.total_size_gb, data.total_size));
+      if (data.total_size) bits.push("on disk (whole folder): " + fmtBytes(data.total_size_gb, data.total_size));
       if (data.weight_size && data.weight_size !== data.total_size) bits.push("weights " + fmtBytes(data.weight_size_gb, data.weight_size));
+      if (data.estimated_ram_gb) {
+        bits.push("estimated memory to run: about " + fmtBytes(data.estimated_ram_gb) + " (rough estimate)");
+      }
       if (data.formats && data.formats.length) bits.push("format: " + data.formats.join(", "));
       if (data.pipeline_tag) bits.push(data.pipeline_tag);
       if (data.gated) bits.push("gated");
@@ -1219,6 +1255,38 @@
         box.appendChild(lab);
       }
 
+      const companionBox = document.createElement("div");
+      companionBox.id = "hf-companion-box";
+      box.appendChild(companionBox);
+      const refreshCompanions = () => {
+        companionBox.innerHTML = "";
+        const picked = document.querySelector('input[name="hf-pick"]:checked');
+        const filePath = picked ? picked.value : "";
+        let comps = [];
+        if (filePath && filePath !== "(whole model)") {
+          const f = (data.gguf_files || []).find((g) => g.path === filePath);
+          comps = (f && f.companions) || (data.default_pick && data.default_pick.path === filePath && data.default_pick.companions) || data.companions || [];
+        }
+        if (!comps.length) return;
+        const lab = document.createElement("label");
+        lab.style.fontWeight = "500";
+        lab.style.marginTop = "0.6rem";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.id = "hf-download-companions";
+        cb.checked = true;
+        lab.appendChild(cb);
+        const names = comps.map((c) => {
+          const name = (c.path || "").split("/").pop();
+          return (c.role || "companion") + " " + name + " (" + fmtBytes(c.size_gb, c.size) + ")";
+        }).join(", ");
+        lab.appendChild(document.createTextNode(" Also download the matching companion file: " + names + ". Vision and other multimodal models usually need this to work."));
+        companionBox.appendChild(lab);
+        companionBox.dataset.companions = JSON.stringify(comps);
+      };
+      box.querySelectorAll('input[name="hf-pick"]').forEach((r) => r.addEventListener("change", refreshCompanions));
+      refreshCompanions();
+
       if (!data.gated_blocked) {
         const actions = document.createElement("div");
         actions.className = "actions";
@@ -1238,6 +1306,11 @@
       const filePath = picked ? picked.value : "(whole model)";
       const skip = ($("hf-skip-bin") && $("hf-skip-bin").checked) || false;
       const whole = filePath === "(whole model)";
+      const companionCb = $("hf-download-companions");
+      let companions = [];
+      if (companionCb && $("hf-companion-box") && $("hf-companion-box").dataset.companions) {
+        try { companions = JSON.parse($("hf-companion-box").dataset.companions); } catch (err) { companions = []; }
+      }
       const item = {
         id: lastInspect.id,
         tag: "manual",
@@ -1246,7 +1319,9 @@
         file_path: filePath,
         size: whole ? (lastInspect.total_size || 0) : ((lastInspect.gguf_files || []).find((f) => f.path === filePath) || {}).size || 0,
         whole_repo: whole,
-        skip_bin_duplicates: skip
+        skip_bin_duplicates: skip,
+        companions: companions,
+        download_companions: companionCb ? companionCb.checked : true
       };
       try {
         await startHfDownload([item]);
@@ -1315,7 +1390,7 @@
         (async function init() {
       try {
         info = await api("/api/info");
-        $("version-label").textContent = "v" + (info.version || "1.3");
+        $("version-label").textContent = "v" + (info.version || "1.4");
         fillMachines(info.machine || info.suggested_machine);
         $("base-folder").value = info.base_folder || "";
         $("path-hint").textContent = (info.base_folder || ".") + "/incoming/<computer>/<tag>/";
