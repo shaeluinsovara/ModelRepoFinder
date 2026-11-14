@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import transfer
+
 try:
     import yaml
 except ImportError:
@@ -46,7 +48,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 HF_TOKEN_FILE = ROOT / ".hf_token"
-VERSION = "1.6.2"
+VERSION = "1.7"
 SNAPSHOT_IGNORE_DEFAULT = [".git*"]
 USER_AGENT = f"model-repo-finder/{VERSION}"
 HF = HfApi(headers={"User-Agent": USER_AGENT})
@@ -85,6 +87,7 @@ BUILTIN_HF_KEYS = (
     "speech",
     "background",
     "embedding",
+    "science",
 )
 BUILTIN_GH_KEYS = (
     "runners",
@@ -94,7 +97,15 @@ BUILTIN_GH_KEYS = (
     "vision",
     "home_automation",
     "coding_tools",
+    "science",
 )
+# The machine profile that is filled in from this computer's own hardware.
+DETECTED_MACHINE = "this_computer"
+# Presets added in v1.7. Older settings files get them (once) on upgrade.
+V17_MACHINES = ("this_computer", "pc_8gb_gpu", "mac_8gb")
+CONFIG_VERSION = "1.7"
+RUNTIME_KEYS_FIELD = "_runtime_keys"
+FALLBACK_CAP_GB = 6.0
 
 ProgressCb = Callable[[str], None]
 
@@ -104,10 +115,104 @@ def load_config(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def strip_runtime_fields(cfg: dict) -> dict:
+    """Copy of cfg without values that were filled in at runtime.
+
+    The detected-hardware profile gets its size limit, graphics card name and
+    formats from this computer each launch. Those are never written to the
+    settings file, so a copied settings file never carries hardware details.
+    """
+    machines = cfg.get("machines")
+    if not isinstance(machines, dict):
+        return cfg
+    clean_machines = {}
+    changed = False
+    for key, machine in machines.items():
+        if isinstance(machine, dict) and RUNTIME_KEYS_FIELD in machine:
+            runtime = set(machine.get(RUNTIME_KEYS_FIELD) or [])
+            machine = {k: v for k, v in machine.items() if k not in runtime and k != RUNTIME_KEYS_FIELD}
+            changed = True
+        clean_machines[key] = machine
+    if not changed:
+        return cfg
+    out = dict(cfg)
+    out["machines"] = clean_machines
+    return out
+
+
 def save_config(path: Path, cfg: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+        yaml.safe_dump(strip_runtime_fields(cfg), f, sort_keys=False, allow_unicode=True)
+
+
+def _positive_float(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number <= 0:  # NaN or not positive
+        return None
+    return number
+
+
+def public_hardware(hw: dict | None) -> dict:
+    """The parts of a hardware profile the page shows (all local)."""
+    hw = hw or {}
+    keys = (
+        "ok", "os", "ram_gb", "gpus", "best_gpu", "apple_silicon", "chip", "kind",
+        "memory_for_models_gb", "suggested_max_model_gb", "summary", "explanation",
+        "notes", "formats", "detected_at",
+    )
+    return {k: hw.get(k) for k in keys if k in hw}
+
+
+def apply_detected_hardware(cfg: dict, hw: dict | None) -> dict:
+    """Fill the "This computer (detected)" profile from a hardware profile.
+
+    Runtime values are listed in RUNTIME_KEYS_FIELD so save_config leaves
+    them out. A saved max_model_gb_override always wins over the suggestion.
+    """
+    machines = cfg.get("machines") or {}
+    machine = machines.get(DETECTED_MACHINE)
+    if not isinstance(machine, dict) or machine.get("enabled") is False:
+        return cfg
+    previous = set(machine.get(RUNTIME_KEYS_FIELD) or [])
+    for key in previous:
+        machine.pop(key, None)
+    hw = hw or {}
+    runtime: list[str] = []
+
+    def put(key: str, value) -> None:
+        machine[key] = value
+        runtime.append(key)
+
+    suggested = _positive_float(hw.get("suggested_max_model_gb"))
+    override = _positive_float(machine.get("max_model_gb_override"))
+    typed = _positive_float(machine.get("max_model_gb"))  # hand-edited in the file
+    if override:
+        cap, cap_source = override, "yours"
+    elif typed:
+        cap, cap_source = typed, "settings file"
+    elif suggested:
+        cap, cap_source = suggested, "detected"
+    else:
+        cap, cap_source = FALLBACK_CAP_GB, "fallback"
+    if not typed or override:
+        machine.pop("max_model_gb", None)
+        put("max_model_gb", cap)
+    put("cap_source", cap_source)
+    put("suggested_max_model_gb", suggested)
+    put("hardware", public_hardware(hw))
+    memory = _positive_float(hw.get("memory_for_models_gb"))
+    if memory and hw.get("kind") == "gpu":
+        put("vram_gb", memory)
+    elif memory and hw.get("kind") == "apple":
+        put("unified_gb", memory)
+    if not machine.get("formats"):
+        put("formats", list(hw.get("formats") or ["gguf"]))
+    machine[RUNTIME_KEYS_FIELD] = runtime
+    return cfg
 
 
 def migrate_config(cfg: dict, default_path: Path | None = None) -> bool:
@@ -153,6 +258,10 @@ def migrate_config(cfg: dict, default_path: Path | None = None) -> bool:
         cfg["github_allow_list"] = []
         changed = True
 
+    if _version_tuple(cfg.get("config_version")) < _version_tuple(CONFIG_VERSION):
+        if _migrate_v17(cfg, defaults):
+            changed = True
+
     hf_keys = list(all_hf_tags(cfg).keys())
     gh_keys = list(all_github_tags(cfg).keys())
     for key, machine in (cfg.get("machines") or {}).items():
@@ -165,6 +274,43 @@ def migrate_config(cfg: dict, default_path: Path | None = None) -> bool:
             machine["github_categories"] = [k for k in BUILTIN_GH_KEYS if k in gh_keys]
             changed = True
     return changed
+
+
+def _version_tuple(value) -> tuple[int, ...]:
+    parts = []
+    for piece in str(value or "0").split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def _migrate_v17(cfg: dict, defaults: dict) -> bool:
+    """One-time v1.7 upgrade: detected profile, new presets, Science category."""
+    machines = cfg.get("machines")
+    if not isinstance(machines, dict):
+        return False
+    default_machines = defaults.get("machines") or {}
+    added_first: dict = {}
+    for key in V17_MACHINES:
+        if key not in machines and key in default_machines:
+            added_first[key] = dict(default_machines[key])
+    rebuilt: dict = {}
+    if DETECTED_MACHINE in added_first:
+        rebuilt[DETECTED_MACHINE] = added_first.pop(DETECTED_MACHINE)
+    rebuilt.update(machines)
+    rebuilt.update(added_first)
+    tags_ok = "science" in (cfg.get("tags") or {})
+    gh_ok = "science" in (cfg.get("github_tags") or {})
+    for key, machine in rebuilt.items():
+        if not isinstance(machine, dict):
+            continue
+        for field, ok in (("hf_categories", tags_ok), ("github_categories", gh_ok)):
+            current = machine.get(field)
+            if ok and isinstance(current, list) and current and "science" not in current:
+                machine[field] = current + ["science"]
+    cfg["machines"] = rebuilt
+    cfg["config_version"] = CONFIG_VERSION
+    return True
 
 
 def detect_os() -> str:
@@ -183,6 +329,9 @@ def suggest_machine(cfg: dict | None = None) -> str:
     os_name = detect_os()
     machines = enabled_machines(cfg or {})
     keys = list(machines.keys())
+    detected = machines.get(DETECTED_MACHINE)
+    if detected and _positive_float(detected.get("max_model_gb")):
+        return DETECTED_MACHINE
 
     def first_prefix(prefix: str) -> str | None:
         for key in keys:
@@ -1929,7 +2078,13 @@ def _looks_gguf(model: dict) -> bool:
 
 
 class DownloadProgress(tqdm if tqdm is not None else object):  # type: ignore[valid-type]
-    """tqdm subclass that reports byte progress to a shared dict."""
+    """tqdm subclass for snapshot_download's "files fetched" bar.
+
+    In huggingface_hub 0.x, snapshot_download's tqdm_class counts *files*,
+    not bytes. (v1.6.2 mistook that count for bytes.) This class reports
+    "N of M files" only; bytes come from transfer.TransferMonitor, which
+    watches the data arrive on disk.
+    """
 
     sink: dict | None = None
     _lock = threading.Lock()
@@ -1953,17 +2108,16 @@ class DownloadProgress(tqdm if tqdm is not None else object):  # type: ignore[va
 
     def _publish(self):
         sink = DownloadProgress.sink
-        if not sink:
+        if not sink or sink.get("_files_from_sizes"):
             return
         with DownloadProgress._lock:
-            sink["downloaded_bytes"] = int(getattr(self, "n", 0) or 0)
-            sink["total_bytes"] = int(getattr(self, "total", 0) or 0)
-            total = sink["total_bytes"]
+            total = int(getattr(self, "total", 0) or 0)
             if total:
-                sink["percent"] = round(100.0 * sink["downloaded_bytes"] / total, 1)
-            else:
-                sink["percent"] = None
+                sink["files_done"] = int(getattr(self, "n", 0) or 0)
+                sink["files_total"] = total
 
+
+FileCountProgress = DownloadProgress
 
 
 # --- resilient downloads -------------------------------------------------
@@ -2173,76 +2327,38 @@ def _supported_kwargs(fn: Callable, kwargs: dict) -> dict:
     return {k: v for k, v in kwargs.items() if _accepts_kwarg(fn, k)}
 
 
-class _DiskProgress:
-    """Report download progress by watching bytes appear on disk.
+class _DiskProgress(transfer.TransferMonitor):
+    """Kept for older callers: progress measured from bytes on disk."""
 
-    Used when the installed huggingface_hub cannot take our progress class.
-    It sums file sizes under the destination (including the .incomplete
-    files huggingface_hub writes while downloading).
-    """
-
-    def __init__(self, sink: dict | None, folder: Path, interval: float = 0.5):
-        self.sink = sink
-        self.folder = Path(folder)
-        self.interval = interval
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._start_bytes = self._measure()
-
-    def _measure(self) -> int:
-        total = 0
-        try:
-            for p in self.folder.rglob("*"):
-                try:
-                    if p.is_file():
-                        total += p.stat().st_size
-                except OSError:
-                    continue
-        except OSError:
-            pass
-        return total
-
-    def _publish(self) -> None:
-        if not self.sink:
-            return
-        done = max(0, self._measure() - self._start_bytes)
-        with DownloadProgress._lock:
-            self.sink["downloaded_bytes"] = done
-            total = int(self.sink.get("total_bytes") or 0)
-            self.sink["percent"] = round(min(99.0, 100.0 * done / total), 1) if total else None
-
-    def _run(self) -> None:
-        while not self._stop.wait(self.interval):
-            self._publish()
-
-    def __enter__(self):
-        if self.sink is not None:
-            self._thread = threading.Thread(target=self._run, name="mrf-disk-progress", daemon=True)
-            self._thread.start()
-        return self
-
-    def __exit__(self, *exc):
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2)
-        self._publish()
-        return False
+    def __init__(self, sink: dict | None, folder: Path, interval: float = transfer.SAMPLE_SECONDS):
+        super().__init__(sink, folder, interval=interval)
 
 
 def _hub_download_call(fn: Callable, folder: Path, progress: dict | None, **kwargs):
-    """Call hf_hub_download / snapshot_download with only supported arguments."""
-    if tqdm is not None:
+    """Call hf_hub_download / snapshot_download with only supported arguments.
+
+    Bytes are always measured on disk (TransferMonitor). For snapshot_download
+    a file-count progress class is passed when the installed version takes one.
+    hf_hub_download never gets tqdm_class: 0.x does not accept it.
+    """
+    is_snapshot = fn is snapshot_download or getattr(fn, "__name__", "") == "snapshot_download"
+    if tqdm is not None and is_snapshot:
         kwargs["tqdm_class"] = DownloadProgress
     call_kwargs = _supported_kwargs(fn, kwargs)
-    use_tqdm = "tqdm_class" in call_kwargs
-    if use_tqdm:
-        DownloadProgress.sink = progress
-        try:
-            return fn(**call_kwargs)
-        finally:
-            DownloadProgress.sink = None
-    with _DiskProgress(progress, folder):
+
+    def _call():
+        if "tqdm_class" in call_kwargs:
+            DownloadProgress.sink = progress
+            try:
+                return fn(**call_kwargs)
+            finally:
+                DownloadProgress.sink = None
         return fn(**call_kwargs)
+
+    if progress is not None and progress.get(transfer.MONITOR_FIELD):
+        return _call()
+    with transfer.TransferMonitor(progress, folder):
+        return _call()
 
 
 def download_gguf(
@@ -2309,6 +2425,123 @@ def download_mlx(
     progress: dict | None = None,
 ) -> Path:
     return download_repo(repo_id, dest_dir, progress=progress)
+
+
+# Tests switch this off so a fake download never asks Hugging Face for sizes.
+REPO_SIZE_LOOKUP = True
+
+
+def repo_file_sizes(
+    repo_id: str,
+    token: str | None = None,
+    ignore_patterns: list[str] | None = None,
+) -> dict[str, int]:
+    """Sizes of the files a whole-repo download will fetch (best effort)."""
+    if not REPO_SIZE_LOOKUP:
+        return {}
+    import fnmatch
+
+    try:
+        info = _hf_api(token).model_info(repo_id, files_metadata=True, timeout=15)
+    except Exception:  # noqa: BLE001 - sizes are only for the progress bar
+        return {}
+    out: dict[str, int] = {}
+    for sib in getattr(info, "siblings", None) or []:
+        name = str(getattr(sib, "rfilename", "") or "")
+        if not name:
+            continue
+        if any(fnmatch.fnmatch(name, pat) for pat in (ignore_patterns or [])):
+            continue
+        size = getattr(sib, "size", None)
+        lfs = getattr(sib, "lfs", None)
+        if not size and lfs is not None:
+            size = getattr(lfs, "size", None) or (lfs.get("size") if isinstance(lfs, dict) else None)
+        out[name] = int(size or 0)
+    return out
+
+
+def _safe_companions(item: dict, whole: bool) -> list[dict]:
+    if whole or not item.get("download_companions", True):
+        return []
+    out = []
+    for comp in item.get("companions") or []:
+        if not isinstance(comp, dict):
+            continue
+        cpath = str(comp.get("path") or "")
+        if not cpath or Path(cpath).is_absolute() or ".." in Path(cpath).parts:
+            continue
+        out.append(comp)
+    return out
+
+
+def planned_item_bytes(item: dict) -> int:
+    """Best guess at an item's download size before it starts (0 = unknown)."""
+    fmt = str(item.get("format") or "gguf").lower()
+    file_path = str(item.get("file_path") or item.get("file") or "")
+    whole = bool(item.get("whole_repo")) or file_path in {"", "(whole model)"}
+    total = int(item.get("size") or 0)
+    if fmt == "gguf" and not whole:
+        for comp in _safe_companions(item, whole):
+            total += int(comp.get("size") or 0)
+    return total
+
+
+def fetch_model(
+    repo_id: str,
+    item: dict,
+    dest: Path,
+    *,
+    progress: dict | None = None,
+    token: str | None = None,
+    nested: bool = True,
+) -> Path:
+    """Download one approved model (and any companion files) into `dest`.
+
+    One TransferMonitor watches the whole item, so the progress shows the
+    main file and its companions as one total with a steady speed.
+    """
+    fmt = str(item.get("format") or "gguf").lower()
+    file_path = str(item.get("file_path") or item.get("file") or "")
+    whole = bool(item.get("whole_repo")) or file_path in {"", "(whole model)"}
+    single = fmt == "gguf" and bool(file_path) and not whole
+    companions = _safe_companions(item, whole) if single else []
+    dest.mkdir(parents=True, exist_ok=True)
+    if single:
+        sizes = {file_path: int(item.get("size") or 0)}
+        for comp in companions:
+            sizes[str(comp["path"])] = int(comp.get("size") or 0)
+        folder = dest
+        ignore = None
+    else:
+        ignore = list(SNAPSHOT_IGNORE_DEFAULT)
+        if item.get("skip_bin_duplicates"):
+            ignore.append("*.bin")
+        sizes = repo_file_sizes(repo_id, token, ignore)
+        folder = dest / repo_id.replace("/", "__") if nested else dest
+        folder.mkdir(parents=True, exist_ok=True)
+    known = {k: v for k, v in sizes.items() if v}
+    total = sum(known.values()) or int(item.get("size") or 0)
+    if progress is not None:
+        progress["_files_from_sizes"] = bool(known) and len(known) == len(sizes)
+    try:
+        with transfer.TransferMonitor(progress, folder, file_sizes=sizes if known else None, total_bytes=total):
+            if single:
+                path = download_gguf(repo_id, file_path, dest, progress=progress, token=token)
+                for comp in companions:
+                    cpath = str(comp["path"])
+                    role = str(comp.get("role") or "companion")
+                    _download_log(progress, f"Also downloading the matching {role} file ({cpath.rsplit('/', 1)[-1]})…")
+                    cdest = download_gguf(repo_id, cpath, dest, progress=progress, token=token)
+                    _download_log(progress, f"Saved companion {cdest}")
+            else:
+                path = download_repo(
+                    repo_id, dest, progress=progress, token=token,
+                    ignore_patterns=ignore, nested=nested,
+                )
+    finally:
+        if progress is not None:
+            progress.pop("_files_from_sizes", None)
+    return Path(path)
 
 
 
@@ -2951,6 +3184,12 @@ def write_report(data: dict, report_path: Path, dry_run: bool = True) -> None:
 
 def run_cli(dry_run: bool, config_path: Path, machines_filter: list[str] | None) -> int:
     cfg = load_config(config_path)
+    try:
+        import hardware
+
+        apply_detected_hardware(cfg, hardware.detect())
+    except Exception:  # noqa: BLE001 - detection is a nicety, never a blocker
+        pass
     keys = list(enabled_machines(cfg))
     if machines_filter:
         keys = [k for k in keys if k in machines_filter]

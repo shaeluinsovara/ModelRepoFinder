@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+import transfer
 import watcher as W
 
 DELETE_CONFIRM_PHRASE = "DELETE"
@@ -1264,28 +1265,9 @@ def default_download(cfg: dict, machine: str, item: dict, root: Path, progress: 
     if not repo_id:
         raise ValueError("Missing model id.")
     token = W.load_hf_token(root) or None
-    fmt = str(item.get("format") or "gguf").lower()
-    file_path = str(item.get("file_path") or item.get("file") or "")
-    whole = bool(item.get("whole_repo")) or file_path in {"", "(whole model)"}
-    if fmt == "gguf" and file_path and file_path != "(whole model)" and not item.get("whole_repo"):
-        path = W.download_gguf(repo_id, file_path, dest, progress=progress, token=token)
-    else:
-        ignore = [".git*"]
-        if item.get("skip_bin_duplicates"):
-            ignore.append("*.bin")
-        path = W.download_repo(
-            repo_id, dest, progress=progress, token=token,
-            ignore_patterns=ignore, nested=(tag != "manual"),
-        )
-    companions = item.get("companions") or []
-    if companions and item.get("download_companions", True) and not whole:
-        for comp in companions:
-            cpath = (comp.get("path") if isinstance(comp, dict) else "") or ""
-            if not cpath:
-                continue
-            if Path(cpath).is_absolute() or ".." in Path(cpath).parts:
-                continue
-            W.download_gguf(repo_id, cpath, dest, progress=progress, token=token)
+    path = W.fetch_model(
+        repo_id, item, dest, progress=progress, token=token, nested=(tag != "manual"),
+    )
     if not verify_download(path):
         raise RuntimeError("The download finished but the files could not be verified.")
     return Path(path)
@@ -1432,6 +1414,7 @@ def execute_run(
     kind: str = "scheduled",
     download_in_progress: bool = False,
     allow_fn: Callable[[str], None] | None = None,
+    download_progress: dict | None = None,
 ) -> dict:
     """Run (or dry-run) a scan + download + cleanup cycle.
 
@@ -1535,17 +1518,31 @@ def execute_run(
     downloaded: list[dict] = []
     failed: list[dict] = []
     download_errors: list[str] = []
-    for item in to_download:
+    sink = download_progress
+    if sink is not None:
+        sink["planned_bytes"] = [W.planned_item_bytes(i) for i in to_download]
+        sink["item_count"] = len(to_download)
+        sink["batch_done_bytes"] = 0
+        sink["status"] = "running" if to_download else "idle"
+    for index, item in enumerate(to_download):
         repo_id = str(item.get("id") or "")
         tag = str(item.get("tag") or "misc")
         if progress_cb:
             progress_cb(f"Downloading {repo_id}…")
+        if sink is not None:
+            transfer.reset_item(sink, total_bytes=W.planned_item_bytes(item), name=repo_id)
+            sink["current"] = {"id": repo_id, "tag": tag}
+            sink["item_index"] = index + 1
         try:
             if allow_fn:
                 allow_fn(repo_id)
             else:
                 W.add_to_allow_list(cfg, repo_id)
-            path = Path(download_fn(item) if download_fn else default_download(cfg, machine, item, root))
+            path = Path(download_fn(item) if download_fn else default_download(cfg, machine, item, root, progress=sink))
+            if sink is not None:
+                sink["batch_done_bytes"] = int(sink.get("batch_done_bytes") or 0) + max(
+                    int(sink.get("downloaded_bytes") or 0), int(sink.get("total_bytes") or 0)
+                )
             if not verify_download(path):
                 raise RuntimeError("The download finished but the files could not be verified.")
             dest = W.incoming_dir(cfg, machine, tag, root)
@@ -1569,6 +1566,9 @@ def execute_run(
             if W.is_rate_limit_error(exc):
                 rate_limited = True
     errors.extend(download_errors)
+    if sink is not None:
+        sink["current"] = None
+        sink["status"] = "done"
 
     downloads_failed = bool(failed)
     cleaned: list[dict] = []

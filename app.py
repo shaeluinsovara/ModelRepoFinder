@@ -18,9 +18,12 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
 import github_finder as GH
+import hardware
+import library
 import local_scan
 import scheduler
 import seen_store
+import transfer
 import watcher as W
 
 ROOT = Path(__file__).resolve().parent
@@ -92,8 +95,12 @@ _SESSION_BASE: str | None = None
 # Tests set this to False so a unit test does not walk the real home folder.
 _SCAN_DEFAULTS = True
 _LOCAL_CACHE: dict = {"result": None, "at": 0.0}
+_REPO_CACHE: dict = {"result": None, "at": 0.0}
 _LOCAL_LOCK = threading.Lock()
 _SCHEDULER_STOP = threading.Event()
+# This computer's memory and graphics card, read once per launch (local only).
+_HARDWARE: dict | None = None
+_HW_LOCK = threading.Lock()
 
 # Per-launch request token, injected into the served page and required on POST.
 CSRF_HEADER = "X-MRF-Token"
@@ -159,11 +166,31 @@ def request_boundary_error(handler, *, mutating: bool) -> tuple[int, str] | None
     return None
 
 
+def _hardware(*, force: bool = False) -> dict:
+    """Detected hardware for this computer (cached; detection never raises)."""
+    global _HARDWARE
+    with _HW_LOCK:
+        if _HARDWARE is None or force:
+            _HARDWARE = hardware.detect()
+        return _HARDWARE
+
+
+def set_hardware(profile: dict | None) -> None:
+    """Install a hardware profile (used by tests and Detect again)."""
+    global _HARDWARE
+    with _HW_LOCK:
+        _HARDWARE = profile
+
+
+def _with_hardware(cfg: dict) -> dict:
+    return W.apply_detected_hardware(cfg, _hardware())
+
+
 def _cfg() -> dict:
     global _CFG_CACHE
     with _CFG_LOCK:
         if _CFG_CACHE is None:
-            _CFG_CACHE = W.load_config(CONFIG_PATH)
+            _CFG_CACHE = _with_hardware(W.load_config(CONFIG_PATH))
         return _CFG_CACHE
 
 
@@ -178,7 +205,7 @@ def _apply_session_base(cfg: dict) -> dict:
 def _reload_cfg() -> dict:
     global _CFG_CACHE
     with _CFG_LOCK:
-        _CFG_CACHE = _apply_session_base(W.load_config(CONFIG_PATH))
+        _CFG_CACHE = _with_hardware(_apply_session_base(W.load_config(CONFIG_PATH)))
         return _CFG_CACHE
 
 
@@ -209,6 +236,12 @@ def _persist_fields(**updates) -> dict:
 def _default_machine(cfg: dict) -> str:
     suggested = W.suggest_machine(cfg)
     machines = W.enabled_machines(cfg)
+    if suggested == W.DETECTED_MACHINE and suggested in machines:
+        # Someone who already set up a schedule on a preset keeps seeing it.
+        if not scheduler.schedule_for_machine(cfg, suggested).get("enabled"):
+            for key in machines:
+                if key != suggested and scheduler.schedule_for_machine(cfg, key).get("enabled"):
+                    return key
     if suggested in machines:
         return suggested
     return next(iter(machines), "pc_32gb_gpu")
@@ -240,14 +273,142 @@ def _job_public(kind: str) -> dict:
                 "failed": list(d.get("failed") or []),
             }
         )
+        if kind in {"download", "github_download"}:
+            out.update(_transfer_public(d))
+    if kind == "schedule" and isinstance(d.get("transfer"), dict):
+        t = d["transfer"]
+        out["transfer"] = {
+            "current": t.get("current"),
+            "downloaded_bytes": t.get("downloaded_bytes") or 0,
+            "total_bytes": t.get("total_bytes") or 0,
+            "percent": t.get("percent"),
+            **_transfer_public(t),
+        }
     return out
 
+
+def _new_transfer_sink() -> dict:
+    return {
+        "status": "idle",
+        "current": None,
+        "message": "",
+        "log": [],
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "percent": None,
+    }
+
+
+def _start_batch(sink: dict, planned: list[int]) -> None:
+    """Remember the batch so the page can show "item 2 of 3" and an overall total."""
+    sink["planned_bytes"] = [int(p or 0) for p in planned]
+    sink["item_count"] = len(planned)
+    sink["item_index"] = 0
+    sink["batch_done_bytes"] = 0
+
+
+def _record_planned(sink: dict, index: int, size: int) -> None:
+    planned = list(sink.get("planned_bytes") or [])
+    if 0 <= index < len(planned):
+        planned[index] = int(size or 0)
+        sink["planned_bytes"] = planned
+
+
+def _transfer_public(d: dict) -> dict:
+    """Detailed progress for one download job (sizes, speed, time left)."""
+    out = {
+        "active_files": list(d.get("active_files") or []),
+        "files_done": d.get("files_done"),
+        "files_total": d.get("files_total"),
+        "item_index": d.get("item_index") or 0,
+        "item_count": d.get("item_count") or 0,
+        "item_name": d.get("item_name") or "",
+        "speed_bps": 0.0,
+        "eta_seconds": None,
+        "quiet_seconds": 0,
+        "stalled": False,
+        "stall_after_seconds": int(transfer.STALL_AFTER_SECONDS),
+        "overall_done_bytes": 0,
+        "overall_total_bytes": None,
+        "overall_percent": None,
+    }
+    if d.get("status") == "running" and d.get("current"):
+        out.update(transfer.live_fields(d))
+    planned = list(d.get("planned_bytes") or [])
+    index = int(d.get("item_index") or 0) - 1
+    current_total = int(d.get("total_bytes") or 0)
+    if 0 <= index < len(planned) and current_total:
+        planned[index] = current_total
+    done = int(d.get("batch_done_bytes") or 0)
+    if d.get("status") == "running" and d.get("current"):
+        done += int(d.get("downloaded_bytes") or 0)
+    out["overall_done_bytes"] = done
+    if planned and all(p > 0 for p in planned):
+        total = sum(planned)
+        out["overall_total_bytes"] = total
+        out["overall_percent"] = round(min(100.0, 100.0 * done / total), 1) if total else None
+    return out
 
 
 def _clear_local_cache() -> None:
     with _LOCAL_LOCK:
         _LOCAL_CACHE["result"] = None
         _LOCAL_CACHE["at"] = 0.0
+        _REPO_CACHE["result"] = None
+        _REPO_CACHE["at"] = 0.0
+
+
+def _local_repos(*, force: bool = False) -> dict:
+    """Return a (usually cached) read-only scan of code projects on this computer."""
+    with _LOCAL_LOCK:
+        age = time.time() - (_REPO_CACHE["at"] or 0)
+        if not force and _REPO_CACHE["result"] is not None and age < 120:
+            return _REPO_CACHE["result"]
+    cfg = _cfg()
+    result = local_scan.scan_local_repos(cfg, include_defaults=_SCAN_DEFAULTS)
+    with _LOCAL_LOCK:
+        _REPO_CACHE["result"] = result
+        _REPO_CACHE["at"] = time.time()
+    return result
+
+
+def _library_rows(*, force: bool = False) -> list[dict]:
+    cfg = _cfg()
+    models = _local_models(force=force)
+    repos = _local_repos(force=force)
+    inv = scheduler.load_inventory(scheduler.current_path(ROOT))
+    machines = {k: (m.get("name") or k) for k, m in (cfg.get("machines") or {}).items() if isinstance(m, dict)}
+    return library.build_rows(
+        local_models=models,
+        local_repos=repos,
+        app_models=W.list_installed(cfg, machine=None, root=ROOT),
+        app_repos=W.list_github_installed(cfg, root=ROOT),
+        tracked=scheduler.tracked_for(inv, None),
+        hf_names={k: (t.get("name") or k) for k, t in W.all_hf_tags(cfg).items()},
+        gh_names={k: (t.get("name") or k) for k, t in W.all_github_tags(cfg).items()},
+        machine_names=machines,
+        state_path=library.current_path(ROOT),
+    )
+
+
+def _library_payload(*, force: bool = False) -> dict:
+    rows = _library_rows(force=force)
+    models = _local_models()
+    repos = _local_repos()
+    notes = []
+    for label, result in (("models", models), ("projects", repos)):
+        if result.get("truncated"):
+            notes.append(
+                f"The {label} scan stopped early ({', '.join(result.get('truncate_reasons') or []) or 'limit reached'}), "
+                "so this list may be incomplete."
+            )
+        notes.extend(str(e) for e in (result.get("errors") or [])[:3])
+    return {
+        "rows": rows,
+        "summary": library.summary(rows),
+        "notes": notes,
+        "scan_folders": list(_cfg().get("scan_folders") or []),
+    }
 
 
 def _local_models(*, force: bool = False) -> dict:
@@ -266,6 +427,22 @@ def _local_models(*, force: bool = False) -> dict:
         _LOCAL_CACHE["result"] = result
         _LOCAL_CACHE["at"] = time.time()
     return result
+
+
+def _repo_identities() -> dict:
+    """GitHub projects on this computer: scanned clones/zips plus the app's own."""
+    ident = local_scan.repo_identity_sets(_local_repos())
+    cfg = _cfg()
+    for item in cfg.get("github_allow_list") or []:
+        if item and "/" in str(item):
+            ident["ids"].add(str(item).lower())
+    for row in W.list_github_installed(cfg, root=ROOT):
+        name = row.get("name") or ""
+        if "__" in name and "/" not in name:
+            rid = name.replace("__", "/", 1).lower()
+            ident["ids"].add(rid)
+            ident["by_id"].setdefault(rid, {"source": "app", "path": row.get("path") or ""})
+    return ident
 
 
 def _identities() -> dict:
@@ -294,9 +471,12 @@ def _annotate_payload(data: dict | None) -> dict | None:
     if not data:
         return data
     ident = _identities()
+    repo_ident = _repo_identities() if any(t.get("repos") for t in data.get("tags") or []) else None
     for tag in data.get("tags") or []:
         local_scan.annotate_already_local(tag.get("models") or [], ident)
         local_scan.annotate_already_local(tag.get("repos") or [], ident)
+        if repo_ident is not None and tag.get("repos"):
+            local_scan.annotate_repos_local(tag["repos"], repo_ident)
     if data.get("overall"):
         local_scan.annotate_already_local(data["overall"], ident)
     return data
@@ -346,6 +526,10 @@ def _info_payload() -> dict:
                 "vram_gb": m.get("vram_gb") or m.get("unified_gb"),
                 "formats": [f.lower() for f in (m.get("formats") or ["gguf"])],
                 "note": m.get("note") or "",
+                "detected": key == W.DETECTED_MACHINE,
+                "cap_source": m.get("cap_source") or ("preset" if key != W.DETECTED_MACHINE else ""),
+                "suggested_max_model_gb": m.get("suggested_max_model_gb"),
+                "max_model_gb_override": m.get("max_model_gb_override"),
             }
         )
     cats = W.category_payload(cfg, machine)
@@ -354,6 +538,8 @@ def _info_payload() -> dict:
         "app": "ModelRepoFinder",
         "version": VERSION,
         "os": W.detect_os(),
+        "hardware": W.public_hardware(_hardware()),
+        "detected_machine": W.DETECTED_MACHINE,
         "suggested_machine": _default_machine(cfg),
         "machine": machine,
         "base_folder": base,
@@ -388,6 +574,37 @@ def _info_payload() -> dict:
         "schedule_job": _job_public("schedule"),
         "popularity_disclaimer": W.POPULARITY_DISCLAIMER,
     }
+
+
+MIN_CAP_GB = 0.5
+MAX_CAP_GB = 1024.0
+
+
+def _set_machine_cap(cfg: dict, machine: str, raw) -> None:
+    """Change a computer's size limit. Blank / null on the detected profile
+    goes back to the suggested limit."""
+    machines = cfg.get("machines") or {}
+    if machine not in W.enabled_machines(cfg):
+        raise ValueError(f"Unknown machine: {machine}")
+    entry = machines[machine]
+    if raw in (None, "", "auto"):
+        if machine != W.DETECTED_MACHINE:
+            raise ValueError("Type a size limit in GB for this computer.")
+        value = None
+    else:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError("The size limit must be a number of GB, like 9.5.") from None
+        if not (MIN_CAP_GB <= value <= MAX_CAP_GB) or value != value:
+            raise ValueError(f"The size limit must be between {MIN_CAP_GB:g} and {MAX_CAP_GB:g} GB.")
+        value = round(value, 1)
+    if machine == W.DETECTED_MACHINE:
+        entry["max_model_gb_override"] = value
+        W.apply_detected_hardware(cfg, _hardware())
+    else:
+        entry["max_model_gb"] = value
+    _persist_fields(machines=cfg.get("machines"))
 
 
 def _set_base_folder(path_str: str) -> None:
@@ -509,8 +726,9 @@ def _run_downloads(machine: str, items: list[dict]) -> None:
         _STATE["download"]["failed"] = []
         _STATE["download"]["failed_machine"] = machine
         _STATE["download"]["log"].append("Added to the approve list. Starting download…")
+        _start_batch(_STATE["download"], [W.planned_item_bytes(i) for i in items])
 
-    for item in items:
+    for index, item in enumerate(items):
         repo_id = (item.get("id") or "").strip()
         try:
             tag = W.validate_category_key(
@@ -546,6 +764,7 @@ def _run_downloads(machine: str, items: list[dict]) -> None:
             failed.append(dict(item))
             continue
         label = f"{repo_id} ({fmt})"
+        planned = W.planned_item_bytes(item)
         with _LOCK:
             _STATE["download"]["current"] = {
                 "id": repo_id,
@@ -554,45 +773,25 @@ def _run_downloads(machine: str, items: list[dict]) -> None:
                 "file": file_path,
             }
             _STATE["download"]["message"] = f"Downloading {label}…"
-            _STATE["download"]["downloaded_bytes"] = 0
-            _STATE["download"]["total_bytes"] = int(item.get("size") or 0)
-            _STATE["download"]["percent"] = 0
+            transfer.reset_item(_STATE["download"], total_bytes=planned, name=label)
+            _STATE["download"]["item_index"] = index + 1
             _STATE["download"]["log"].append(f"Downloading {label} into {dest}")
         progress = _STATE["download"]
         try:
-            whole = bool(item.get("whole_repo")) or file_path in {"", "(whole model)"}
-            if fmt == "gguf" and file_path and file_path != "(whole model)" and not item.get("whole_repo"):
-                path = W.download_gguf(repo_id, file_path, dest, progress=progress, token=token)
-            else:
-                ignore = [".git*"]
-                if item.get("skip_bin_duplicates"):
-                    ignore.append("*.bin")
-                path = W.download_repo(
-                    repo_id,
-                    dest,
-                    progress=progress,
-                    token=token,
-                    ignore_patterns=ignore,
-                    nested=(tag != "manual"),
-                )
-            companions = item.get("companions") or []
-            if companions and item.get("download_companions", True) and not whole:
-                for comp in companions:
-                    cpath = (comp.get("path") if isinstance(comp, dict) else "") or ""
-                    if not cpath:
-                        continue
-                    role = (comp.get("role") if isinstance(comp, dict) else "") or "companion"
-                    with _LOCK:
-                        _STATE["download"]["log"].append(
-                            f"Also downloading the matching {role} file ({cpath.rsplit('/', 1)[-1]})…"
-                        )
-                    cdest = W.download_gguf(repo_id, cpath, dest, progress=progress, token=token)
-                    with _LOCK:
-                        _STATE["download"]["log"].append(f"Saved companion {cdest}")
+            path = W.fetch_model(
+                repo_id, item, dest, progress=progress, token=token,
+                nested=(tag != "manual"),
+            )
             with _LOCK:
                 _STATE["download"]["log"].append(f"Saved {path}")
                 _STATE["download"]["percent"] = 100
                 _STATE["download"]["message"] = f"Finished {label}"
+                finished_bytes = max(
+                    int(_STATE["download"].get("downloaded_bytes") or 0),
+                    int(_STATE["download"].get("total_bytes") or 0),
+                )
+                _STATE["download"]["batch_done_bytes"] = int(_STATE["download"].get("batch_done_bytes") or 0) + finished_bytes
+                _record_planned(_STATE["download"], index, finished_bytes)
             succeeded += 1
         except Exception as exc:  # noqa: BLE001
             failed.append(dict(item))
@@ -652,7 +851,7 @@ def _run_github_refresh(
             categories=categories,
             per_page=per_page,
             sort=sort,
-            already_ids=_already_ids(),
+            already_ids=_already_ids() | set(_repo_identities().get("ids") or set()),
             seen_path=seen_store.current_path(ROOT),
             record_seen=True,
         )
@@ -727,8 +926,9 @@ def _run_github_downloads(items: list[dict], action: str = "download") -> None:
         _STATE["github_download"]["status"] = "running"
         _STATE["github_download"]["error"] = None
         _STATE["github_download"]["log"].append(f"{verb} approved GitHub repos…")
+        _start_batch(_STATE["github_download"], [0] * len(items))
 
-    for item in items:
+    for index, item in enumerate(items):
         repo_id = (item.get("id") or "").strip()
         tag = (item.get("tag") or item.get("category") or "misc").strip()
         branch = item.get("default_branch") or "main"
@@ -749,17 +949,24 @@ def _run_github_downloads(items: list[dict], action: str = "download") -> None:
         with _LOCK:
             _STATE["github_download"]["current"] = {"id": repo_id, "tag": tag}
             _STATE["github_download"]["message"] = f"{verb} {repo_id}…"
-            _STATE["github_download"]["downloaded_bytes"] = 0
-            _STATE["github_download"]["total_bytes"] = 0
-            _STATE["github_download"]["percent"] = 0
+            transfer.reset_item(_STATE["github_download"], total_bytes=0, name=repo_id)
+            _STATE["github_download"]["item_index"] = index + 1
             _STATE["github_download"]["log"].append(f"{verb} {repo_id} into {dest}")
         progress = _STATE["github_download"]
         try:
-            if action == "update":
-                path = GH.update_repo(repo_id, dest, default_branch=branch, progress=progress)
-            else:
-                path = GH.clone_or_zip(repo_id, dest, default_branch=branch, progress=progress)
+            try:
+                watch = dest / GH.folder_name(GH._safe_repo_id(repo_id))
+            except ValueError:
+                watch = dest
+            with transfer.TransferMonitor(progress, watch):
+                if action == "update":
+                    path = GH.update_repo(repo_id, dest, default_branch=branch, progress=progress)
+                else:
+                    path = GH.clone_or_zip(repo_id, dest, default_branch=branch, progress=progress)
             with _LOCK:
+                _STATE["github_download"]["batch_done_bytes"] = int(
+                    _STATE["github_download"].get("batch_done_bytes") or 0
+                ) + int(_STATE["github_download"].get("downloaded_bytes") or 0)
                 _STATE["github_download"]["log"].append(f"Saved {path}")
                 _STATE["github_download"]["percent"] = 100
                 _STATE["github_download"]["message"] = f"Finished {repo_id}"
@@ -816,6 +1023,9 @@ def _run_schedule(machine: str, kind: str, dry_run: bool) -> None:
             log.append(msg)
             _STATE["schedule"]["log"] = log[-40:]
 
+    sink = _new_transfer_sink()
+    with _LOCK:
+        _STATE["schedule"]["transfer"] = sink
     try:
         cfg = _reload_cfg()
         sched = scheduler.schedule_for_machine(cfg, machine)
@@ -839,6 +1049,7 @@ def _run_schedule(machine: str, kind: str, dry_run: bool) -> None:
             kind=kind,
             download_in_progress=False,
             allow_fn=allow_fn,
+            download_progress=sink,
         )
         _clear_local_cache()
         status = result.get("status") or "ok"
@@ -952,6 +1163,10 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, payload)
         if parsed == "/api/local-models":
             return self._json(200, _local_models())
+        if parsed == "/api/library":
+            return self._json(200, _library_payload())
+        if parsed == "/api/hardware":
+            return self._json(200, W.public_hardware(_hardware()))
         return super().do_GET()
 
     def _serve_index(self) -> None:
@@ -972,20 +1187,17 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         denied = request_boundary_error(self, mutating=True)
         if denied:
-            # If Content-Length is huge, close rather than hanging on a body we will not use.
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
-                length = 0
-            if length > MAX_BODY:
-                self.close_connection = True
-            return self._json(denied[0], {"error": denied[1]})
+            # Read (and throw away) a normal-sized body before answering, so the
+            # client is not still sending when we close. Otherwise some systems
+            # (Windows especially) report a reset/abort instead of the 403.
+            # A huge or lying Content-Length is never read past MAX_BODY.
+            self._drain_body()
+            return self._json(denied[0], {"error": denied[1]}, close=True)
         parsed = self.path.split("?", 1)[0]
         try:
             body = self._read_json()
         except BodyTooLarge as exc:
-            self.close_connection = True
-            return self._json(413, {"error": str(exc) or "Request body is too large."})
+            return self._json(413, {"error": str(exc) or "Request body is too large."}, close=True)
         except ValueError as exc:
             return self._json(400, {"error": str(exc)})
         routes = {
@@ -1003,6 +1215,8 @@ class Handler(SimpleHTTPRequestHandler):
             "/api/top-picks": self._handle_top_picks,
             "/api/seen/reset": self._handle_seen_reset,
             "/api/local-scan": self._handle_local_scan,
+            "/api/hardware/detect": self._handle_hardware_detect,
+            "/api/library/export": self._handle_library_export,
             "/api/schedule": self._handle_schedule,
             "/api/schedule/preview": self._handle_schedule_preview,
             "/api/schedule/run": self._handle_schedule_run,
@@ -1043,11 +1257,44 @@ class Handler(SimpleHTTPRequestHandler):
             raise ValueError("Expected a JSON object.")
         return data
 
-    def _json(self, status: int, payload: dict) -> None:
+    def _drain_body(self, timeout: float = 2.0) -> None:
+        """Discard a rejected request's body (up to MAX_BODY), then close."""
+        self.close_connection = True
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        if length <= 0 or length > MAX_BODY:
+            return
+        try:
+            previous = self.connection.gettimeout()
+            self.connection.settimeout(timeout)
+        except (AttributeError, OSError):
+            previous = None
+        try:
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(65536, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                self.connection.settimeout(previous)
+            except (AttributeError, OSError):
+                pass
+
+    def _json(self, status: int, payload: dict, *, close: bool = False) -> None:
         blob = json.dumps(payload, default=str).encode("utf-8")
+        if close:
+            self.close_connection = True
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(blob)))
+        if close:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(blob)
 
@@ -1059,6 +1306,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(400, {"error": f"Unknown machine: {machine}"})
             with _LOCK:
                 _STATE["settings"]["machine"] = machine
+        if "max_model_gb" in body:
+            try:
+                _set_machine_cap(cfg, machine, body.get("max_model_gb"))
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
         if "base_folder" in body:
             try:
                 _set_base_folder(str(body.get("base_folder") or ""))
@@ -1483,7 +1735,32 @@ class Handler(SimpleHTTPRequestHandler):
     def _handle_local_scan(self, body: dict) -> None:
         force = bool(body.get("force", True))
         result = _local_models(force=force)
+        if force:
+            _local_repos(force=True)
         return self._json(200, result)
+
+    def _handle_hardware_detect(self, body: dict) -> None:
+        _hardware(force=True)
+        _reload_cfg()
+        return self._json(200, _info_payload())
+
+    def _handle_library_export(self, body: dict) -> None:
+        rows = _library_rows(force=bool(body.get("rescan")))
+        rows = library.filter_rows(
+            rows,
+            kind=str(body.get("kind") or ""),
+            origin=str(body.get("origin") or ""),
+            text=str(body.get("search") or ""),
+        )
+        blob = library.to_csv_bytes(rows)
+        name = library.export_filename()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+        self.send_header("Content-Length", str(len(blob)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(blob)
 
     def _handle_schedule(self, body: dict) -> None:
         cfg = _cfg()
@@ -1584,6 +1861,10 @@ def main() -> int:
         print(f"Could not find the web page at {WEB / 'index.html'}", file=sys.stderr)
         return 1
 
+    print("  Checking this computer's memory and graphics card (stays on this computer)…")
+    hw = _hardware()
+    if hw.get("summary"):
+        print(f"  Found: {hw['summary']}")
     cfg = _reload_cfg()
     # Fill in any new built-in fields without wiping the user's existing choices.
     packaged = ROOT / "machines.yaml"
