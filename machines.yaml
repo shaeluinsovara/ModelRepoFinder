@@ -1,9 +1,37 @@
-# ModelRepoFinder v1.6.2
-# These are example computers. Rename them, change the size caps, or add
-# your own entries to match the machines you actually use. Set enabled:
-# false to hide a preset from the computer list. Caps are in gigabytes
-# and should usually sit a little under the memory you can spare.
+# ModelRepoFinder v1.7
+# These are the computers the app can plan for. "This computer (detected)"
+# is filled in automatically each time the app starts: it reads this
+# computer's memory and graphics card (nothing is sent anywhere) and
+# suggests a size limit. You can change that limit in the app, or pick one
+# of the example presets below instead. Rename presets, change their size
+# caps, or add your own entries. Set enabled: false to hide a preset from
+# the computer list. Caps are in gigabytes and should usually sit a little
+# under the memory you can spare.
+config_version: '1.7'
 machines:
+  this_computer:
+    name: This computer (detected)
+    auto_detect: true
+    max_model_gb_override: null
+    hf_categories:
+    - coding
+    - relational
+    - spiritual
+    - vision
+    - music
+    - speech
+    - background
+    - embedding
+    - science
+    github_categories:
+    - runners
+    - memory_agents
+    - voice
+    - music
+    - vision
+    - home_automation
+    - coding_tools
+    - science
   pc_32gb_gpu:
     name: Windows PC with a 32 GB GPU
     vram_gb: 32
@@ -19,6 +47,7 @@ machines:
     - speech
     - background
     - embedding
+    - science
     github_categories:
     - runners
     - memory_agents
@@ -27,6 +56,7 @@ machines:
     - vision
     - home_automation
     - coding_tools
+    - science
   pc_16gb_gpu:
     name: Windows PC with a 16 GB GPU
     vram_gb: 16
@@ -42,6 +72,7 @@ machines:
     - speech
     - background
     - embedding
+    - science
     github_categories:
     - runners
     - memory_agents
@@ -50,13 +81,57 @@ machines:
     - vision
     - home_automation
     - coding_tools
+    - science
   pc_24gb_gpu:
     name: Windows PC with a 24 GB GPU
     vram_gb: 24
     max_model_gb: 19
     formats:
     - gguf
-    enabled: false
+    hf_categories:
+    - coding
+    - relational
+    - spiritual
+    - vision
+    - music
+    - speech
+    - background
+    - embedding
+    - science
+    github_categories:
+    - runners
+    - memory_agents
+    - voice
+    - music
+    - vision
+    - home_automation
+    - coding_tools
+    - science
+  pc_8gb_gpu:
+    name: Windows PC with an 8 GB GPU
+    vram_gb: 8
+    max_model_gb: 6.5
+    formats:
+    - gguf
+    hf_categories:
+    - coding
+    - relational
+    - spiritual
+    - vision
+    - music
+    - speech
+    - background
+    - embedding
+    - science
+    github_categories:
+    - runners
+    - memory_agents
+    - voice
+    - music
+    - vision
+    - home_automation
+    - coding_tools
+    - science
   mac_16gb:
     name: Mac with 16 GB unified memory
     unified_gb: 16
@@ -73,6 +148,7 @@ machines:
     - speech
     - background
     - embedding
+    - science
     github_categories:
     - runners
     - memory_agents
@@ -81,6 +157,7 @@ machines:
     - vision
     - home_automation
     - coding_tools
+    - science
   mac_32gb:
     name: Mac with 32 GB unified memory
     unified_gb: 32
@@ -97,6 +174,7 @@ machines:
     - speech
     - background
     - embedding
+    - science
     github_categories:
     - runners
     - memory_agents
@@ -105,6 +183,33 @@ machines:
     - vision
     - home_automation
     - coding_tools
+    - science
+  mac_8gb:
+    name: Mac with 8 GB unified memory
+    unified_gb: 8
+    max_model_gb: 5
+    formats:
+    - gguf
+    - mlx
+    hf_categories:
+    - coding
+    - relational
+    - spiritual
+    - vision
+    - music
+    - speech
+    - background
+    - embedding
+    - science
+    github_categories:
+    - runners
+    - memory_agents
+    - voice
+    - music
+    - vision
+    - home_automation
+    - coding_tools
+    - science
 tags:
   coding:
     name: Coding
@@ -306,6 +411,51 @@ tags:
     - whisper
     - -VL-
     - coder
+  science:
+    name: Science / Research / Academia
+    description: Models for research papers, math, biology, chemistry, physics, medicine,
+      and data science, including scientific chat models.
+    hf_search: science
+    hf_queries:
+    - science
+    - math
+    - biology
+    - chemistry
+    - medical
+    keywords:
+    - science
+    - scientific
+    - research
+    - academic
+    - arxiv
+    - pubmed
+    - paper
+    - math
+    - theorem
+    - prover
+    - biology
+    - biomed
+    - bioinformatic
+    - protein
+    - genom
+    - chemistry
+    - chemllm
+    - molecul
+    - physics
+    - astronom
+    - medical
+    - clinical
+    - statistic
+    - data science
+    - data-science
+    fuzzy_card: true
+    keep: 2
+    exclude_id_substrings:
+    - music
+    - tts
+    - whisper
+    - embedding
+    - mmproj
 github_tags:
   runners:
     name: Local AI runners / frontends
@@ -355,6 +505,14 @@ github_tags:
     queries:
     - '"coding assistant" OR "continue dev" OR "tabby" OR "open interpreter" OR "aider"
       OR "local copilot"'
+    keep: 5
+  science:
+    name: Science / Research / Academia
+    description: Research and academic tools such as paper readers, math and statistics
+      libraries, bioinformatics, chemistry, physics, and data science projects.
+    queries:
+    - '"scientific computing" OR bioinformatics OR "computational chemistry" OR "research
+      papers" OR arxiv OR "data science"'
     keep: 5
 custom_tags: {}
 github_custom_tags: {}
