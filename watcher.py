@@ -606,6 +606,319 @@ def _retry(fn, tries: int = 3, delay: float = 1.5):
 
 
 
+# --- polite Hugging Face API calls ----------------------------------------
+# Hugging Face limits how many API requests one internet address can make.
+# Every search and file-list call goes through `hf_api_call`, which:
+# - paces requests a little so a big scan does not fire everything at once,
+# - retries 429 (rate limit), 5xx, and timeout errors with backoff, honoring
+#   the Retry-After header,
+# - caps the total waiting per run (see `hf_request_budget`), and after that
+#   stops asking for the rest of the run instead of hammering the server,
+# - sends the saved Hugging Face token (if any), which raises the limits.
+
+class HFRateLimited(RuntimeError):
+    """Hugging Face is rate limiting this computer (HTTP 429)."""
+
+    def __init__(self, message: str = "", retry_after: float | None = None):
+        super().__init__(message or RATE_LIMIT_MESSAGE)
+        self.retry_after = retry_after
+        self.status_code = 429
+
+
+RATE_LIMIT_MESSAGE = (
+    "Hugging Face is limiting how many requests this computer can make right "
+    "now (HTTP 429, too many requests)."
+)
+TOKEN_TIP = (
+    "Tip: a free Hugging Face account and a Read token raise this limit a lot. "
+    "Make one at huggingface.co, open Settings > Access Tokens, create a token "
+    "with the Read role, and paste it into the app's Hugging Face token box."
+)
+HF_PACING_SECONDS = 0.25        # minimum gap between API requests (no token)
+HF_PACING_WITH_TOKEN = 0.1      # a token gets a higher limit, so pace lighter
+HF_RETRY_ATTEMPTS = 4           # tries per request for 429 / 5xx / timeouts
+HF_MAX_SINGLE_WAIT = 30.0       # never wait longer than this for one retry
+HF_DEFAULT_WAIT_BUDGET = 120.0  # total retry waiting allowed per run
+HF_CACHE_TTL = 20 * 60          # reuse search results for 20 minutes
+
+_HF_LOCK = threading.Lock()
+_HF_LAST_CALL = 0.0
+_HF_BUDGET = {"remaining": HF_DEFAULT_WAIT_BUDGET, "exhausted": False, "rate_limited": False}
+_HF_CACHE: dict = {}
+_HF_TOKEN_CACHE: dict = {"root": None, "value": None, "at": 0.0}
+_HF_TOKEN_ROOT: Path | None = None
+_HF_SLEEP: Callable[[float], None] | None = None  # tests replace this
+
+
+def _hf_sleep(seconds: float) -> None:
+    if seconds <= 0:
+        return
+    (_HF_SLEEP or time.sleep)(seconds)
+
+
+def reset_hf_budget(seconds: float | None = None) -> None:
+    """Start a fresh retry-wait budget (each scan / scheduled run calls this)."""
+    with _HF_LOCK:
+        _HF_BUDGET["remaining"] = float(HF_DEFAULT_WAIT_BUDGET if seconds is None else seconds)
+        _HF_BUDGET["exhausted"] = False
+        _HF_BUDGET["rate_limited"] = False
+
+
+def hf_budget_state() -> dict:
+    with _HF_LOCK:
+        return dict(_HF_BUDGET)
+
+
+class hf_request_budget:  # noqa: N801 - used as a context manager
+    """`with hf_request_budget(120): ...` caps retry waiting for one run."""
+
+    def __init__(self, seconds: float | None = None):
+        self.seconds = seconds
+
+    def __enter__(self):
+        reset_hf_budget(self.seconds)
+        return self
+
+    def __exit__(self, *exc):
+        self.state = hf_budget_state()
+        return False
+
+
+def clear_hf_cache() -> None:
+    with _HF_LOCK:
+        _HF_CACHE.clear()
+
+
+def set_hf_token_root(root: Path | None) -> None:
+    """Tell the search code where the app keeps its saved token file."""
+    global _HF_TOKEN_ROOT
+    _HF_TOKEN_ROOT = Path(root) if root is not None else None
+    forget_hf_token_cache()
+
+
+def forget_hf_token_cache() -> None:
+    with _HF_LOCK:
+        _HF_TOKEN_CACHE.update({"root": None, "value": None, "at": 0.0})
+
+
+def current_hf_token() -> str:
+    """The saved token (keychain or local file), cached for a minute."""
+    root = _HF_TOKEN_ROOT or ROOT
+    now_t = time.monotonic()
+    with _HF_LOCK:
+        cached = _HF_TOKEN_CACHE.get("value")
+        if cached is not None and _HF_TOKEN_CACHE.get("root") == root and now_t - _HF_TOKEN_CACHE["at"] < 60:
+            return cached
+    try:
+        value = load_hf_token(root) or ""
+    except Exception:  # noqa: BLE001
+        value = ""
+    with _HF_LOCK:
+        _HF_TOKEN_CACHE.update({"root": root, "value": value, "at": now_t})
+    return value
+
+
+_HF_TOKEN_CLIENTS: dict = {}
+
+
+def _hf_client():
+    """HfApi for searches: the shared one, or one that sends the saved token."""
+    token = current_hf_token()
+    if not token:
+        return HF
+    client = _HF_TOKEN_CLIENTS.get(token)
+    if client is None:
+        _HF_TOKEN_CLIENTS.clear()
+        client = HfApi(headers={"User-Agent": USER_AGENT}, token=token)
+        _HF_TOKEN_CLIENTS[token] = client
+    return client
+
+
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    seconds = getattr(exc, "retry_after", None)
+    if isinstance(seconds, (int, float)):
+        return float(seconds)
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) if response is not None else None
+    if not headers:
+        return None
+    try:
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+    except Exception:  # noqa: BLE001
+        return None
+    if raw is None:
+        return None
+    raw = str(raw).strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(raw)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+    except (TypeError, ValueError):
+        return None
+
+
+def is_rate_limit_error(exc: BaseException | None) -> bool:
+    if exc is None:
+        return False
+    if isinstance(exc, HFRateLimited):
+        return True
+    if _http_status(exc) == 429:
+        return True
+    msg = str(exc).lower()
+    return "429" in msg and ("too many" in msg or "rate limit" in msg) or "rate limit your ip" in msg
+
+
+def is_rate_limit_text(text: str) -> bool:
+    low = (text or "").lower()
+    return ("429" in low and "too many" in low) or "rate limit" in low or "rate-limit" in low
+
+
+def _is_transient_api_error(exc: BaseException) -> bool:
+    if is_rate_limit_error(exc):
+        return True
+    status = _http_status(exc)
+    if status is not None:
+        return status in {408, 425, 500, 502, 503, 504} or status >= 500
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    if "timeout" in name or "connectionerror" in name:
+        return True
+    return any(h in msg for h in ("timed out", "timeout", "connection reset", "connection aborted",
+                                  "temporarily unavailable", "502", "503", "504"))
+
+
+def _pace() -> None:
+    global _HF_LAST_CALL
+    gap = HF_PACING_SECONDS
+    if gap <= 0:
+        return
+    if current_hf_token():
+        gap = min(gap, HF_PACING_WITH_TOKEN)
+    with _HF_LOCK:
+        now_t = time.monotonic()
+        target = max(now_t, _HF_LAST_CALL + gap)
+        _HF_LAST_CALL = target
+        wait = target - now_t
+    if wait > 0:
+        _hf_sleep(wait)
+
+
+def _take_wait(wanted: float) -> float | None:
+    """Reserve retry waiting from this run's budget. None means out of budget."""
+    with _HF_LOCK:
+        if _HF_BUDGET["exhausted"]:
+            return None
+        wanted = max(0.0, min(float(wanted), HF_MAX_SINGLE_WAIT))
+        if wanted > _HF_BUDGET["remaining"] + 1e-9:
+            _HF_BUDGET["exhausted"] = True
+            return None
+        _HF_BUDGET["remaining"] -= wanted
+        return wanted
+
+
+def hf_api_call(fn: Callable[[], Any], *, what: str = "Hugging Face request"):
+    """Run one Hugging Face API call politely (pacing, retries, budget)."""
+    attempts = max(1, int(HF_RETRY_ATTEMPTS))
+    last: BaseException | None = None
+    for i in range(1, attempts + 1):
+        with _HF_LOCK:
+            stop = _HF_BUDGET["exhausted"] and _HF_BUDGET["rate_limited"]
+        if stop:
+            # Already rate limited and out of patience this run: do not ask again.
+            raise HFRateLimited(RATE_LIMIT_MESSAGE + " Skipped the rest of this search to give it a rest.")
+        _pace()
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if not _is_transient_api_error(exc):
+                raise
+            limited = is_rate_limit_error(exc)
+            if limited:
+                with _HF_LOCK:
+                    _HF_BUDGET["rate_limited"] = True
+            if i >= attempts:
+                break
+            hinted = _retry_after_seconds(exc)
+            backoff = hinted if hinted is not None else 2.0 * (2 ** (i - 1))  # 2, 4, 8 s
+            granted = _take_wait(backoff)
+            if granted is None:
+                break
+            _hf_sleep(granted)
+    assert last is not None
+    if is_rate_limit_error(last):
+        raise HFRateLimited(RATE_LIMIT_MESSAGE, retry_after=_retry_after_seconds(last)) from last
+    raise last
+
+
+def _cache_get(key):
+    if HF_CACHE_TTL <= 0:
+        return None
+    with _HF_LOCK:
+        hit = _HF_CACHE.get(key)
+        if not hit:
+            return None
+        at, value = hit
+        if time.monotonic() - at > HF_CACHE_TTL:
+            _HF_CACHE.pop(key, None)
+            return None
+        return value
+
+
+def _cache_put(key, value) -> None:
+    if HF_CACHE_TTL <= 0:
+        return
+    with _HF_LOCK:
+        if len(_HF_CACHE) > 2000:
+            _HF_CACHE.clear()
+        _HF_CACHE[key] = (time.monotonic(), value)
+
+
+def friendly_error(exc: BaseException | str) -> str:
+    """One plain-language line for an error, for logs and the app page."""
+    if isinstance(exc, str):
+        text = exc
+        if is_rate_limit_text(text):
+            return RATE_LIMIT_MESSAGE
+        return text.strip().splitlines()[0][:300] if text.strip() else "Unknown problem."
+    msg = str(exc)
+    low = msg.lower()
+    status = _http_status(exc)
+    if is_rate_limit_error(exc):
+        return RATE_LIMIT_MESSAGE
+    if isinstance(exc, TypeError) and "unexpected keyword argument" in low:
+        return (
+            "The download helper and the installed huggingface_hub library do not "
+            f"match ({msg.strip().splitlines()[0][:160]}). Close the app and start it "
+            "again with the launcher so it reinstalls the tested library versions."
+        )
+    if status in (401, 403) or "gated" in low or "401" in low or "403" in low:
+        return (
+            "Hugging Face refused access. This model may be gated: open its page, "
+            "accept the license, and save a Hugging Face token in the app."
+        )
+    if status == 404 or ("404" in low and "not found" in low):
+        return "That model or file was not found on Hugging Face (it may have been renamed or removed)."
+    if "no space" in low or "errno 28" in low or "disk full" in low or "not enough space" in low:
+        return "The disk is full, so the download could not be saved."
+    if status is not None and status >= 500:
+        return f"Hugging Face had a server problem (HTTP {status}). Try again later."
+    if isinstance(exc, (ConnectionError, TimeoutError)) or "timed out" in low or "timeout" in low \
+            or "failed to resolve" in low or "max retries exceeded" in low:
+        return "Could not reach Hugging Face (the connection failed or timed out)."
+    first = msg.strip().splitlines()[0] if msg.strip() else type(exc).__name__
+    return first[:300]
+
+
 # Hugging Face list_models sort keys. "trending" uses trendingScore when the
 # API accepts it (confirmed against the public API in November 2026) and
 # falls back to likes if a given server rejects it. "newest" uses lastModified.
@@ -742,7 +1055,15 @@ def search_models(
             kwargs["pipeline_tag"] = pipeline_tag
         if author:
             kwargs["author"] = author
-        return list(HF.list_models(**kwargs))
+        key = ("list_models", bool(current_hf_token()), tuple(sorted((k, str(v)) for k, v in kwargs.items())))
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        client = _hf_client()
+        found = hf_api_call(lambda: list(client.list_models(**kwargs)), what="search")
+        briefs_now = [_model_brief(m) for m in found]
+        _cache_put(key, briefs_now)
+        return briefs_now
 
     def _attempt():
         global _HF_TRENDING_OK, _HF_SORT_FALLBACK
@@ -753,14 +1074,15 @@ def search_models(
                 _HF_SORT_FALLBACK = None
             return models
         except Exception as exc:  # noqa: BLE001
-            if api_sort == "trendingScore":
+            # Only a rejected sort means "trending is not supported"; a rate
+            # limit or outage must not switch trending off for the session.
+            if api_sort == "trendingScore" and not _is_transient_api_error(exc):
                 _HF_TRENDING_OK = False
                 _HF_SORT_FALLBACK = "likes"
                 return _call("likes")
             raise exc
 
-    models = _retry(_attempt)
-    briefs = [_model_brief(m) for m in models]
+    briefs = [dict(b) for b in _attempt()]
     # The API already ordered them; re-sort locally so a merged pool stays consistent.
     return sort_models(briefs, sort_key)
 
@@ -801,12 +1123,20 @@ def _model_brief(m: Any) -> dict:
     }
 
 
-def list_gguf_files(model_id: str) -> list[dict]:
-    def _call():
-        return list(HF.list_repo_tree(model_id, recursive=True))
+def _list_repo_tree(model_id: str) -> list:
+    key = ("tree", bool(current_hf_token()), model_id)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    client = _hf_client()
+    tree = hf_api_call(lambda: list(client.list_repo_tree(model_id, recursive=True)), what="file list")
+    _cache_put(key, tree)
+    return tree
 
+
+def list_gguf_files(model_id: str) -> list[dict]:
     try:
-        tree = _retry(_call)
+        tree = _list_repo_tree(model_id)
     except HfHubHTTPError as exc:
         if getattr(exc, "response", None) is not None and exc.response.status_code == 404:
             return []
@@ -826,11 +1156,8 @@ def list_gguf_files(model_id: str) -> list[dict]:
 def list_repo_weights(model_id: str) -> dict | None:
     """Sum weight files for a non-GGUF (or mixed) repo, and guess the format."""
 
-    def _call():
-        return list(HF.list_repo_tree(model_id, recursive=True))
-
     try:
-        tree = _retry(_call)
+        tree = _list_repo_tree(model_id)
     except HfHubHTTPError as exc:
         if getattr(exc, "response", None) is not None and exc.response.status_code == 404:
             return None
@@ -980,8 +1307,11 @@ def matches_keywords(model: dict, keywords: list[str], extra: str = "") -> bool:
 
 
 def _fetch_card_text(model_id: str) -> str:
+    client = _hf_client()
     try:
-        info = HF.model_info(model_id)
+        info = hf_api_call(lambda: client.model_info(model_id), what="model card")
+    except HFRateLimited:
+        raise
     except Exception:  # noqa: BLE001
         return ""
     bits = []
@@ -1009,8 +1339,13 @@ def collect_suggestions(
     record_seen: bool = True,
     keep_override: int | None = None,
     cap_override: float | None = None,
+    exclude_allowed: bool = True,
 ) -> dict:
     """Build a shortlist for one machine, only for the chosen categories.
+
+    `exclude_allowed=False` keeps models that are on the approve list but not
+    downloaded (the scheduler uses this, so a download that failed once is
+    tried again next run instead of being hidden forever).
 
     Each call returns the next fresh batch: models already shown (or already
     on this computer / already approved) are skipped, and a larger search
@@ -1030,9 +1365,11 @@ def collect_suggestions(
     selected = categories if categories is not None else list(machine.get("hf_categories") or tags.keys())
     selected = [k for k in selected if k in tags]
     allow = set(cfg.get("allow_list") or [])
-    exclude = set(already_ids or set()) | {a.lower() for a in allow}
-    # Keep original-case allow ids too so comparisons can be exact or lowercased.
-    exclude |= set(allow)
+    exclude = set(already_ids or set())
+    if exclude_allowed:
+        exclude |= {a.lower() for a in allow}
+        # Keep original-case allow ids too so comparisons can be exact or lowercased.
+        exclude |= set(allow)
     sort_key = normalize_hf_sort(sort)
     search_limit = max(10, min(int(search_limit or 80), 150))
 
@@ -1120,42 +1457,49 @@ def _collect_one_tag(
             progress_cb(msg)
 
     groups: list[tuple[str, list[dict]]] = []
-    try:
-        if "gguf" in formats:
-            merged: dict[str, dict] = {}
-            for q in queries:
-                note(f"Searching Hugging Face for {display} (GGUF, “{q}”)…")
-                for m in search_gguf_models(
-                    q,
-                    limit=search_limit,
-                    pipeline_tag=pipeline_tag if use_pt else None,
-                    sort=sort,
-                ):
+    search_errors: list[str] = []
+    attempted = 0
+
+    def _run_queries(label: str, search) -> list[dict]:
+        nonlocal attempted
+        merged: dict[str, dict] = {}
+        for q in queries:
+            attempted += 1
+            note(label.format(q=q))
+            try:
+                for m in search(q):
                     merged.setdefault(m["id"], m)
-            groups.append(("gguf", list(merged.values())))
-        if allow_nongguf:
-            merged_any: dict[str, dict] = {}
-            for q in queries:
-                note(f"Searching Hugging Face for {display} (“{q}”)…")
-                for m in search_models(
-                    q,
-                    limit=search_limit,
-                    pipeline_tag=pipeline_tag if use_pt else None,
-                    gguf_only=False,
-                    sort=sort,
-                ):
-                    merged_any.setdefault(m["id"], m)
-            groups.append(("any", list(merged_any.values())))
-        if "mlx" in formats:
-            merged_mlx: dict[str, dict] = {}
-            for q in queries:
-                note(f"Searching mlx-community for {display} (“{q}”)…")
-                for m in search_mlx_models(q, limit=search_limit, sort=sort):
-                    merged_mlx.setdefault(m["id"], m)
-            groups.append(("mlx", list(merged_mlx.values())))
-    except Exception as exc:  # noqa: BLE001
-        tag_out["error"] = f"Search failed: {exc}"
+            except Exception as exc:  # noqa: BLE001
+                # Keep what the other searches found; report this one.
+                search_errors.append(f"search “{q}”: {friendly_error(exc)}")
+        return list(merged.values())
+
+    if "gguf" in formats:
+        groups.append(("gguf", _run_queries(
+            f"Searching Hugging Face for {display} (GGUF, “{{q}}”)…",
+            lambda q: search_gguf_models(
+                q, limit=search_limit,
+                pipeline_tag=pipeline_tag if use_pt else None, sort=sort,
+            ),
+        )))
+    if allow_nongguf:
+        groups.append(("any", _run_queries(
+            f"Searching Hugging Face for {display} (“{{q}}”)…",
+            lambda q: search_models(
+                q, limit=search_limit,
+                pipeline_tag=pipeline_tag if use_pt else None, gguf_only=False, sort=sort,
+            ),
+        )))
+    if "mlx" in formats:
+        groups.append(("mlx", _run_queries(
+            f"Searching mlx-community for {display} (“{{q}}”)…",
+            lambda q: search_mlx_models(q, limit=search_limit, sort=sort),
+        )))
+    if search_errors and len(search_errors) >= attempted:
+        tag_out["error"] = "Search failed: " + "; ".join(search_errors[:3])
+        tag_out["rate_limited"] = any(is_rate_limit_text(e) for e in search_errors)
         return tag_out
+    check_problems: list[str] = []
 
     seen: list[str] = []
     if machine_key:
@@ -1180,6 +1524,7 @@ def _collect_one_tag(
             display=display,
             sort=sort,
             already_ids=exclude_ids,
+            problems=check_problems,
         )
         have = {m["id"] for m in all_fits}
         for row in ranked:
@@ -1212,6 +1557,18 @@ def _collect_one_tag(
         tag_out["wrap_note"] = (
             "You've seen every current match in this category; starting the list over."
         )
+    if search_errors or check_problems:
+        tag_out["partial"] = True
+        bits = []
+        if search_errors:
+            bits.append(f"{len(search_errors)} of {attempted} searches failed")
+        if check_problems:
+            bits.append(f"{len(check_problems)} model(s) could not be checked")
+        tag_out["warning"] = (
+            f"Search incomplete for {display}: " + " and ".join(bits) + ". "
+            + friendly_error((search_errors + check_problems)[0].split(": ", 1)[-1])
+        )
+        tag_out["rate_limited"] = any(is_rate_limit_text(e) for e in search_errors + check_problems)
 
     if record_seen and machine_key and chosen:
         try:
@@ -1242,8 +1599,22 @@ def _rank_models(
     display: str = "",
     sort: str = "downloads",
     already_ids: set[str] | None = None,
+    problems: list[str] | None = None,
 ) -> list[dict]:
+    """Inspect search hits and keep the ones that fit.
+
+    Models that could not be checked because Hugging Face was busy (rate
+    limit, server error, timeout) are reported in `problems`, so callers can
+    say the search was incomplete instead of silently dropping them.
+    """
     already = {a.lower() for a in (already_ids or set())}
+    problem_lock = threading.Lock()
+
+    def _problem(mid: str, exc: BaseException) -> None:
+        if problems is None:
+            return
+        with problem_lock:
+            problems.append(f"{mid}: {friendly_error(exc)}")
     candidates = []
     for m in models:
         mid = m.get("id") or ""
@@ -1283,7 +1654,11 @@ def _rank_models(
         mid = m["id"]
         extra_text = ""
         if m.get("_needs_card"):
-            extra_text = _fetch_card_text(mid)
+            try:
+                extra_text = _fetch_card_text(mid)
+            except Exception as exc:  # noqa: BLE001
+                _problem(mid, exc)
+                return None
             if not matches_keywords(m, keywords, extra_text):
                 return None
         files: list[dict] = []
@@ -1310,7 +1685,9 @@ def _rank_models(
                     if not repo or repo["size_gb"] > cap:
                         return None
                     pick = repo
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            if _is_transient_api_error(exc):
+                _problem(mid, exc)
             return None
         if not pick:
             return None
@@ -1396,6 +1773,8 @@ def collect_top_picks(
         if progress_cb:
             progress_cb(msg)
 
+    problems: list[str] = []
+
     def _fits_for(models: list[dict], tag_name: str, display: str, how_many: int) -> list[dict]:
         groups: list[tuple[str, list[dict]]] = []
         if "gguf" in formats:
@@ -1429,6 +1808,7 @@ def collect_top_picks(
                 display=display,
                 sort=sort_key,
                 already_ids=None,  # mark later; do not hide popular models already on disk
+                problems=problems,
             )
             for row in ranked:
                 if row["id"] not in have:
@@ -1437,20 +1817,36 @@ def collect_top_picks(
         return sort_models(collected, sort_key)[:how_many]
 
     overall_models: list[dict] = []
-    try:
-        if "gguf" in formats:
-            note("Looking up popular GGUF models on Hugging Face…")
-            overall_models.extend(search_models("", limit=search_limit, gguf_only=True, sort=sort_key))
-        if "mlx" in formats:
-            note("Looking up popular MLX models…")
-            for m in search_mlx_models("", limit=search_limit, sort=sort_key):
-                if m["id"] not in {x["id"] for x in overall_models}:
-                    overall_models.append(m)
-        if not overall_models:
-            note("Looking up popular models on Hugging Face…")
-            overall_models = search_models("", limit=search_limit, sort=sort_key)
-    except Exception as exc:  # noqa: BLE001
-        overall_error = f"Search failed: {exc}"
+    overall_failures: list[str] = []
+    attempts = 0
+
+    def _try(label: str, fn) -> list[dict]:
+        nonlocal attempts
+        attempts += 1
+        note(label)
+        try:
+            return list(fn())
+        except Exception as exc:  # noqa: BLE001
+            overall_failures.append(friendly_error(exc))
+            return []
+
+    if "gguf" in formats:
+        overall_models.extend(_try(
+            "Looking up popular GGUF models on Hugging Face…",
+            lambda: search_models("", limit=search_limit, gguf_only=True, sort=sort_key),
+        ))
+    if "mlx" in formats:
+        for m in _try("Looking up popular MLX models…",
+                      lambda: search_mlx_models("", limit=search_limit, sort=sort_key)):
+            if m["id"] not in {x["id"] for x in overall_models}:
+                overall_models.append(m)
+    if not overall_models and not overall_failures:
+        overall_models = _try(
+            "Looking up popular models on Hugging Face…",
+            lambda: search_models("", limit=search_limit, sort=sort_key),
+        )
+    if overall_failures and not overall_models:
+        overall_error = "Search failed: " + overall_failures[0]
         overall = []
     else:
         overall_error = None
@@ -1497,8 +1893,15 @@ def collect_top_picks(
                     found.setdefault(m["id"], m)
             slot["models"] = _fits_for(list(found.values()), tag_name, display, slot["keep"])
         except Exception as exc:  # noqa: BLE001
-            slot["error"] = f"Search failed: {exc}"
+            slot["error"] = f"Search failed: {friendly_error(exc)}"
         category_slots.append(slot)
+
+    warnings: list[str] = []
+    if overall_failures and overall_models:
+        warnings.append(f"{len(overall_failures)} of {attempts} popular-model searches failed: {overall_failures[0]}")
+    if problems:
+        warnings.append(f"{len(problems)} model(s) could not be checked: {problems[0].split(': ', 1)[-1]}")
+    all_text = overall_failures + problems + [str(t.get("error") or "") for t in category_slots]
 
     return {
         "machine": machine_key,
@@ -1511,6 +1914,9 @@ def collect_top_picks(
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "overall": overall,
         "overall_error": overall_error,
+        "overall_partial": bool(warnings),
+        "warnings": warnings,
+        "rate_limited": any(is_rate_limit_text(t) for t in all_text),
         "tags": category_slots,
         "mode": "top_picks",
     }
@@ -1729,10 +2135,16 @@ def download_with_retries(fn, *, progress: dict | None = None, attempts: int = 4
             if not retryable:
                 raise
             nxt = i + 1
-            _download_log(progress, f"Connection hiccup, retrying ({nxt}/{total})…")
             delay = _TEST_HOOKS.get("sleep")
+            if is_rate_limit_error(exc):
+                _download_log(progress, f"Hugging Face asked us to slow down, waiting before retrying ({nxt}/{total})…")
+            else:
+                _download_log(progress, f"Connection hiccup, retrying ({nxt}/{total})…")
             if delay is None:
                 delay = 2 ** i  # 2, 4, 8 seconds
+                hinted = _retry_after_seconds(exc)
+                if hinted is not None:
+                    delay = min(max(float(delay), hinted), 60.0)
             time.sleep(float(delay))
     assert last is not None
     raise last
@@ -1813,6 +2225,7 @@ class _DiskProgress:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2)
+        self._publish()
         return False
 
 
@@ -2038,6 +2451,7 @@ def load_hf_token(root: Path | None = None) -> str:
 
 def save_hf_token(token: str, root: Path | None = None) -> None:
     save_secret(".hf_token", _KEYRING_HF, token, root)
+    forget_hf_token_cache()
 
 
 def _hf_api(token: str | None = None) -> HfApi:
