@@ -4,7 +4,7 @@ A small local app that helps you find open-source AI models on [Hugging Face](ht
 
 Nothing is downloaded until you say so. The same folder works on Windows and macOS.
 
-This is **v1.6.2**. It keeps every v1.4 safety check and the v1.5 finder features, and has a scheduled auto-scan that can download matching models and tidy out-of-date ones while the app is open. v1.6.2 makes scheduled downloads actually finish: it fixes a download bug with the tested library versions and handles Hugging Face rate limits gracefully.
+This is **v1.7**. The app now checks this computer's memory and graphics card for you, opens on the **Schedule** tab, adds a Science / Research / Academia category, finds the code projects you already have, gathers everything in a new **My Library** tab (with a spreadsheet export), and shows much more detail while a download is running. Every safety check from earlier versions is still in place.
 
 ## Screenshots
 
@@ -56,11 +56,17 @@ If Python is missing, install Python 3.9+ from [python.org](https://www.python.o
 
 ## What it does
 
-- **Category search on Hugging Face.** Tick the kinds of models you want (coding, emotional / relational chat, spiritual / esoteric knowledge, vision, music, speech / TTS, background / reasoning, embeddings). You can add your own category. Ticks are remembered per computer. Each Refresh shows a new batch (it remembers what it already offered, on this computer only) and you can sort by most downloaded, most liked, trending, or newest.
+The app has four tabs, in this order: **Schedule**, **Models**, **GitHub repos**, and **My Library**. It opens on Schedule.
+
+- **It knows this computer.** When it starts, the app looks at this computer's memory and graphics card and sets up a profile called **This computer (detected)**. The page says what it found in plain words (for example “NVIDIA GeForce RTX 4070, 12 GB graphics memory · 32 GB system memory”) and suggests the largest model size that should run comfortably. You can type your own limit, go back to the suggestion, or click **Check this computer again**. The other computers in the list are presets, for finding models for a different machine.
+- **Schedule first.** The Schedule tab is the first thing you see. If nothing is set up yet, it shows a short, friendly explanation with a **Set up the schedule** button, or you can skip straight to browsing models.
+- **My Library.** One list of every model and code project on this computer: the ones downloaded with this app and the ones it found elsewhere. You can sort by any column, filter by type or by where it came from, search, and **export to a spreadsheet** (a CSV file that opens in Excel, Numbers, or Google Sheets).
+- **Detailed download progress.** While a download runs you see how much is done out of the total (in GB), the percentage, the current speed, an estimate of the time left, which file is downloading, and “item 2 of 3” for a batch. If no new data arrives for about 25 seconds, the page says **“Slow connection, still going…”** so you know it has not stopped.
+- **Category search on Hugging Face.** Tick the kinds of models you want (coding, emotional / relational chat, spiritual / esoteric knowledge, vision, music, speech / TTS, background / reasoning, embeddings, and science / research / academia). You can add your own category. Ticks are remembered per computer. Each Refresh shows a new batch (it remembers what it already offered, on this computer only) and you can sort by most downloaded, most liked, trending, or newest.
 - **Top picks.** A no-keyword list of popular Hugging Face models — most downloaded, most liked, or trending — filtered to ones that should fit the computer you picked. Popularity is a community signal, not a guarantee of quality.
-- **Models already on this computer.** A read-only scan looks in the Hugging Face cache, Ollama, LM Studio, this app’s own folders, and any extra folders you add, so you can avoid downloading a duplicate. Matching search results are marked. Retire still only moves files this app itself downloaded.
+- **Things already on this computer.** A read-only scan looks for models in the Hugging Face cache, Ollama, LM Studio, this app’s own folders, and any extra folders you add. It also looks for code projects you already have: folders cloned with git (it reads the project’s address from the `.git/config` file) and GitHub zip downloads such as `llama.cpp-master` or `ollama-main.zip`, in the usual places (Documents, Downloads, Desktop, a GitHub or source folder, and so on). Matching suggestions on both tabs are marked **Already on this computer**. The scan never changes anything, has time and depth limits, and stays out of system folders. Retire still only moves files this app itself downloaded.
 - **Paste any Hugging Face link.** A model page, an `org/name`, or a `/tree/…` or `/blob/…` link all work. Click **Check** to preview the files, total size, format (GGUF, safetensors, PyTorch, ONNX, MLX, and others), license, and a short note about what can run it. If there are GGUF quality settings, you can pick one or download the whole folder.
-- **A GitHub tab.** Finds recently updated projects (about the last 12 months). You can sort by stars, recent updates, or a fresh mix. Each Refresh shows a new batch. Approve & download will `git clone` if git is installed, or download a zip if it is not. You can **Update** or **Retire** a downloaded repo later.
+- **A GitHub tab.** Finds recently updated projects (about the last 12 months), including a Science / Research / Academia category. You can sort by stars, recent updates, or a fresh mix. Each Refresh shows a new batch. Approve & download will `git clone` if git is installed, or download a zip if it is not. You can **Update** or **Retire** a downloaded repo later.
 - **Resilient downloads.** If a Hugging Face download hits a brief network hiccup, the app retries automatically (up to four times) and picks up what was already saved when it can. You will see a line like `Connection hiccup, retrying (2/4)…`. If Hugging Face’s faster downloader keeps erroring, the app switches to a simpler method. If something still fails, click **Retry failed**. One failure in a batch does not stop the others. You do not need to close the app and start over.
 - **Scheduled auto-scan.** In settings, you can turn on a daily, weekly, or every-N-days scan for this computer. It looks for models that match conditions you set (categories and/or Top picks, sort, formats, size cap, optional minimum downloads or likes, skip models already here), downloads up to the limits you choose, and can tidy out-of-date models it downloaded itself. Turning it on is standing approval for matching models — the page says this. A Dry run shows what would happen first. Cleanup is skipped if a search or download fails, at least one model is kept per category, and the default cleanup is to retire (move) a model, not to delete it. Permanent deletion requires a typed confirmation. Manual downloads and models only found by the local scan are left alone unless you opt one in. The schedule runs only while the app is open, and a missed run is caught up on the next launch. GitHub repositories are not auto-downloaded.
 - **Retire never deletes.** The Retire button moves a downloaded model or repo into a `retired/` folder so you can get it back if you change your mind. Scheduled cleanup uses the same move by default. Permanent deletion, if you turn it on, is a separate setting and needs an explicit confirmation.
@@ -82,22 +88,27 @@ Neither file is included in this repository. Leave the boxes blank unless you ne
 
 ## Computers and size caps
 
-The **Which computer is this for?** list comes from `machines.yaml`. The bundled names are only examples:
+The **Which computer is this for?** list comes from `machines.yaml`. The first entry is filled in from this computer each time the app starts; the rest are examples:
 
 | Key in the file | Shown in the app | Notes |
 | --- | --- | --- |
+| `this_computer` | This computer (detected) | Limit suggested from the memory and graphics card found; the default |
 | `pc_32gb_gpu` | Windows PC with a 32 GB GPU | 26 GB cap, GGUF |
 | `pc_16gb_gpu` | Windows PC with a 16 GB GPU | 13 GB cap, GGUF |
-| `pc_24gb_gpu` | Windows PC with a 24 GB GPU | 19 GB cap, hidden until you enable it |
+| `pc_24gb_gpu` | Windows PC with a 24 GB GPU | 19 GB cap, GGUF |
+| `pc_8gb_gpu` | Windows PC with an 8 GB GPU | 6.5 GB cap, GGUF |
 | `mac_16gb` | Mac with 16 GB unified memory | 10 GB cap, GGUF and MLX |
 | `mac_32gb` | Mac with 32 GB unified memory | 20 GB cap, GGUF and MLX |
+| `mac_8gb` | Mac with 8 GB unified memory | 5 GB cap, GGUF and MLX |
 
-The app tries to start you on a PC preset on Windows and a Mac preset on macOS. Change the list if the guess is wrong. Category ticks are saved per computer.
+**How the suggested limit is worked out.** With a separate graphics card, it is about 80% of the card’s memory (a 12 GB card suggests 9.5 GB). On an Apple Silicon Mac, where the computer and graphics share memory, it is about 62% of that memory (16 GB suggests 10 GB). With no separate graphics card, models run on the main processor, so it is about 40% of system memory (16 GB suggests 6.5 GB), and they will be slower. If a computer has more than one graphics card, the largest one is used. The details found (card name and memory) stay in the app’s memory while it runs; they are never written to `machines.yaml`. Only a limit you type yourself is saved.
+
+Category ticks are saved per computer.
 
 To adapt the list, edit `machines.yaml` (make a copy first if you want a backup):
 
 - Change `name` to whatever you want to see in the list.
-- Change `max_model_gb` to a cap a little under the memory you can spare.
+- Change `max_model_gb` to a cap a little under the memory you can spare. (For **This computer (detected)**, use the box on the page instead; it is saved as `max_model_gb_override`.)
 - Add a new block under `machines:` (you can copy an existing one and rename the key).
 - Set `enabled: false` to hide a preset without deleting it.
 
@@ -108,6 +119,18 @@ You do not have to be a programmer to change those numbers. Downloads go under `
 Leave the command or Terminal window open and read the message. Check that you are online. If a Hugging Face download fails, wait for the automatic retries, then click **Retry failed** if that button appears. Close the window and start the app again only if it will not open, or if Retry failed does not help.
 
 A plain-language copy of these instructions also lives in `README.txt`, next to the launchers.
+
+## What changed in v1.7
+
+- **The app checks this computer for you.** A new **This computer (detected)** profile is filled in from the memory and graphics card it finds (Windows, macOS, and Linux), with a suggested size limit explained in plain words. You can change the limit or go back to the suggestion. An 8 GB graphics card preset and an 8 GB Mac preset were added, and the 24 GB preset is shown by default.
+- **Schedule is the first tab**, and the app opens there. When no schedule is set up yet, it explains what a schedule does and offers a **Set up the schedule** button.
+- **A Science / Research / Academia category** for both models and GitHub projects (maths, biology, chemistry, medicine, and research tools). It is ticked by default on every computer.
+- **Code projects you already have are found.** Git clones and GitHub zip downloads in the usual folders, plus any folders you add, are recognised and marked **Already on this computer** on the GitHub tab. A zip download only matches by name, so it is marked as “a folder with this name is on this computer”.
+- **A new My Library tab** lists every model and project on this computer in one table, with sorting, filters, search, and **Export to a spreadsheet (CSV)**. The long lists that used to sit at the bottom of the other tabs now live here.
+- **Much more detail while downloading:** GB done out of the total, percentage, speed, time left, the file being downloaded, files finished, and overall progress for a batch, updated about every second. After about 25 seconds without new data, the page says “Slow connection, still going…” instead of looking frozen. Download sizes are now measured on disk, so a whole-folder download no longer shows a file count as if it were bytes.
+- **A steadier safety check.** When the app refuses a request from another website, it now reads the request to the end before answering, so Windows reports the refusal cleanly instead of a dropped connection.
+
+See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## What changed in v1.6.2
 
@@ -127,7 +150,7 @@ On a Mac, `/etc` is a shortcut to `/private/etc`. The scan-folder check now look
 - **Cleanup** only touches models the schedule downloaded, or ones you opted in. The default is to retire (move) them. Permanent deletion requires you to type DELETE and confirm. Path checks on delete are as strong as on retire. At least one model is kept per category. Cleanup waits until downloads have finished and been checked, and is skipped if a search or download fails (including when there is no internet).
 - **How to keep the app running at login** is explained below, in plain language. The app will not add itself to your startup list.
 
-v1.5's finder features and v1.4's safety checks are unchanged. See [CHANGELOG.md](CHANGELOG.md) for the full list.
+v1.5's finder features and v1.4's safety checks were unchanged in that release. See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ## Keeping the app running at login (optional)
 

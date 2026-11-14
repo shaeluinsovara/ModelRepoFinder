@@ -31,3 +31,6 @@ Thumbs.db
 # Local 'already shown' suggestion lists and schedule state
 .mrf_seen.json
 .mrf_schedule.json
+
+# Local My Library first-seen dates
+.mrf_library.json

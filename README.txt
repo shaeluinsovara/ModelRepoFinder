@@ -1,5 +1,5 @@
-ModelRepoFinder  v1.6.2
-=======================
+ModelRepoFinder  v1.7
+=====================
 
 This little app looks up open-source AI models on Hugging Face, and
 open-source projects on GitHub, that should fit the computer you pick.
@@ -11,8 +11,47 @@ also in this folder (and on GitHub) if you prefer that format.
 
 
 
-What is new in v1.6.2
----------------------
+What is new in v1.7
+-------------------
+  • The app checks this computer's memory and graphics card when it
+    starts. The first choice in "Which computer is this for?" is now
+    "This computer (detected)". The page says what it found in plain
+    words, for example "NVIDIA GeForce RTX 4070, 12 GB graphics memory
+    · 32 GB system memory", and suggests the largest model size that
+    should run comfortably. You can type your own limit, go back to the
+    suggestion, or click "Check this computer again". What it finds is
+    not saved to machines.yaml; only a limit you type yourself is saved.
+  • How the suggestion is worked out: with a separate graphics card,
+    about 80% of the card's memory. On an Apple Silicon Mac, about 62%
+    of the shared memory. With no separate graphics card, about 40% of
+    system memory (models will run more slowly). If there are several
+    graphics cards, the largest one is used.
+  • New presets for an 8 GB graphics card and an 8 GB Mac. The 24 GB
+    preset is now shown too.
+  • The tabs are now Schedule, Models, GitHub repos, and My Library,
+    and the app opens on Schedule. If no schedule is set up yet, it
+    explains what one does and offers a "Set up the schedule" button.
+  • A new category, Science / Research / Academia, for both models and
+    GitHub projects. It is ticked by default.
+  • The app looks for code projects you already have: folders made with
+    git clone, and GitHub zip downloads such as llama.cpp-master or
+    ollama-main.zip, in the usual places (Documents, Downloads, Desktop,
+    a GitHub or source folder, and folders you add). Matching projects
+    on the GitHub tab are marked "Already on this computer". This look
+    is read-only, has time limits, and stays out of system folders.
+  • My Library lists every model and project on this computer in one
+    table. Sort by any column, filter, search, and click "Export to a
+    spreadsheet (CSV)" to save a file that opens in Excel, Numbers, or
+    Google Sheets.
+  • Downloads show much more detail: GB done out of the total, the
+    percentage, speed, time left, which file is downloading, and "item
+    2 of 3" for a batch. If no new data arrives for about 25 seconds,
+    the page says "Slow connection, still going…" so you know it has
+    not stopped.
+
+
+What was new in v1.6.2
+----------------------
   • Scheduled downloads finish again. The app was passing a progress
     option that the tested Hugging Face library (version 0.36.2) does not
     accept, so single-file downloads stopped with "unexpected keyword
@@ -232,10 +271,17 @@ from https://www.python.org/downloads/  and then run Start-Mac.command again
 What the buttons do
 -------------------
 Which computer is this for?
-    Pick the machine you are finding things for. The app tries to guess
-    (Windows usually starts on a PC preset; a Mac usually starts on a
-    Mac preset). Change it if the guess is wrong. Category ticks then
-    change to the ones saved for that computer.
+    Pick the machine you are finding things for. The first choice,
+    "This computer (detected)", is set up from this computer's own
+    memory and graphics card, and is picked for you. The others are
+    presets, handy when you are finding models for a different
+    computer. Category ticks change to the ones saved for that computer.
+
+Size limit (GB)
+    The largest model file the app will suggest for this computer. Type
+    your own number and click Save limit, or click "Use the suggested
+    limit" to go back. "Check this computer again" looks at the memory
+    and graphics card again.
 
     The names in the list are only examples. You can edit machines.yaml
     to rename them, change the size cap (max_model_gb), add a computer,
@@ -296,6 +342,16 @@ Optional GitHub token
     you can do per minute without a token). A personal access token is
     saved only on this computer, in a hidden local file, and is sent
     only to GitHub. Leave the box blank unless you need it.
+
+Schedule tab
+    Set up an automatic scan that can download matching models while the
+    app is open. "Dry run / preview" shows what would happen first.
+
+My Library tab
+    Everything on this computer in one table. Click a column heading to
+    sort, use the boxes to filter or search, and click "Export to a
+    spreadsheet (CSV)" for a file you can open in Excel or similar.
+    "Scan this computer again" looks again for models and projects.
 
 Retire
     Moves a downloaded item into the retired folder. It is never deleted,
@@ -381,6 +437,9 @@ If something goes wrong
     arrived are kept when possible.
   • Close the window and start the app again only if it will not open,
     or if Retry failed does not help.
+  • If the download progress says "Slow connection, still going…", the
+    download has not stopped. It is waiting for data and will carry on
+    by itself. Finished files are kept.
   • You can screenshot the window if you want to ask someone for help.
 
 You do not need to "code" anything to use this. If you want to change
