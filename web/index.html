@@ -123,6 +123,7 @@
     .banner.ok { background: #e4f0e8; color: var(--ok); }
     .banner.err { background: #f6e4e4; color: var(--err); }
     .banner.info { background: #eee6f0; color: var(--plum-dark); }
+    .banner.warn { background: #f7efd9; color: #6b4e00; }
     .cats {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -512,8 +513,8 @@
         <div id="paste-result" class="hidden"></div>
         <div style="margin-top:1rem;">
           <label for="hf-token">Optional Hugging Face token</label>
-          <input id="hf-token" type="password" placeholder="Only needed for gated models" autocomplete="off">
-          <p class="hint" id="hf-token-hint">Some models are gated: you must open the model page in a browser, accept the license, and paste an access token here. It is saved only on this computer, in a hidden local file, and is sent only to Hugging Face.</p>
+          <input id="hf-token" type="password" placeholder="Recommended: raises Hugging Face's request limit" autocomplete="off">
+          <p class="hint" id="hf-token-hint">A free token lets this app search and download more before Hugging Face says "too many requests", and it is needed for gated models. To get one: make a free account at huggingface.co, open Settings &gt; Access Tokens, create a token with the <b>Read</b> role, and paste it here. It is saved only on this computer (in your system keychain if available, otherwise a hidden file only your user can read) and is sent only to Hugging Face.</p>
         </div>
         <div class="actions">
           <button type="button" class="secondary" id="save-hf-token">Save token</button>
@@ -2072,6 +2073,10 @@
         bits.push("The schedule is off. Save with the box ticked to turn it on.");
       }
       if (state.last_run) bits.push("Last run: " + formatWhen(state.last_run) + (state.last_run_status ? " (" + state.last_run_status + ")" : "") + ".");
+      if (state.last_attempt && state.last_attempt !== state.last_run && state.last_attempt_status && state.last_attempt_status !== "ok") {
+        bits.push("Last attempt: " + formatWhen(state.last_attempt) + " (" + state.last_attempt_status.replace("_", " ") + ").");
+      }
+      if (state.retry_not_before) bits.push("Will try again after " + formatWhen(state.retry_not_before) + ".");
       if (state.last_message) bits.push(state.last_message);
       bits.push("Auto-managed models: " + (state.tracked_count || 0) + " (about " + (state.tracked_disk_gb || 0) + " GB).");
       $("sched-meta").textContent = bits.join(" ");
@@ -2096,7 +2101,9 @@
         if (added.length) parts.push("Added: " + added.join(", "));
         if (retired.length) parts.push("Retired: " + retired.join(", "));
         if (deleted.length) parts.push("Deleted: " + deleted.join(", "));
-        if ((e.errors || []).length) parts.push("Errors: " + e.errors.join("; "));
+        if (e.partial_search) parts.push("(Search incomplete: cleanup skipped.)");
+        if ((e.warnings || []).length) parts.push("Warnings: " + e.warnings.slice(0, 3).join("; "));
+        if ((e.errors || []).length) parts.push("Problems: " + e.errors.slice(0, 6).join("; "));
         li.textContent = (when ? when + " — " : "") + parts.join(" ");
         ul.appendChild(li);
       });
@@ -2107,7 +2114,8 @@
       const host = $("sched-preview-box");
       if (!data) { host.innerHTML = ""; return; }
       const box = document.createElement("div");
-      box.className = "banner " + (data.offline || data.status === "error" ? "err" : (data.dry_run ? "info" : "ok"));
+      const warn = data.partial_search || data.rate_limited || data.status === "partial" || data.status === "rate_limited" || data.status === "incomplete";
+      box.className = "banner " + (data.offline || data.status === "error" ? "err" : (warn ? "warn" : (data.dry_run ? "info" : "ok")));
       box.textContent = data.message || (data.dry_run ? "Preview" : "Run finished");
       const wrap = document.createElement("div");
       wrap.id = "sched-preview";
@@ -2144,10 +2152,28 @@
         list(verb, data.cleaned || [], "cleanup_reason");
         if ((data.failed || []).length) list("Failed", data.failed || [], "error");
       }
+      if (data.partial_note) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = data.partial_note;
+        wrap.appendChild(p);
+      }
+      if (data.token_tip) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = data.token_tip;
+        wrap.appendChild(p);
+      }
+      if ((data.warnings || []).length) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = "Search warnings: " + data.warnings.slice(0, 6).join("; ");
+        wrap.appendChild(p);
+      }
       if ((data.errors || []).length) {
         const p = document.createElement("p");
         p.className = "hint";
-        p.textContent = "Notes: " + data.errors.join("; ");
+        p.textContent = "Notes: " + data.errors.slice(0, 8).join("; ");
         wrap.appendChild(p);
       }
       host.innerHTML = "";

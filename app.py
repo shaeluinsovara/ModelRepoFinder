@@ -436,6 +436,7 @@ def _run_refresh(
             _STATE["refresh"]["error"] = None
             _STATE["refresh"]["message"] = "Starting a fresh look at Hugging Face…"
         cfg = _reload_cfg()
+        W.reset_hf_budget()
         data = W.collect_suggestions(
             cfg,
             machine,
@@ -456,13 +457,34 @@ def _run_refresh(
         with _LOCK:
             _STATE["refresh"]["data"] = data
             _STATE["refresh"]["status"] = "done"
-            _STATE["refresh"]["message"] = "Here are the models that fit. Nothing has been downloaded."
+            _STATE["refresh"]["message"] = "Here are the models that fit. Nothing has been downloaded." + _search_notice(data)
     except Exception as exc:  # noqa: BLE001
         with _LOCK:
             _STATE["refresh"]["status"] = "error"
             _STATE["refresh"]["error"] = str(exc)
             _STATE["refresh"]["message"] = "Could not fetch suggestions."
         traceback.print_exc()
+
+
+def _search_notice(data: dict) -> str:
+    """Plain-language note when part of a search failed (for the status line)."""
+    tags = data.get("tags") or []
+    incomplete = any(t.get("error") or t.get("partial") for t in tags) or bool(
+        data.get("overall_error") or data.get("warnings")
+    )
+    if not incomplete:
+        return ""
+    limited = bool(data.get("rate_limited")) or any(
+        t.get("rate_limited") or W.is_rate_limit_text(str(t.get("error") or "")) for t in tags
+    )
+    note = " Part of the search did not finish, so some categories may be missing models."
+    if limited:
+        note += " Hugging Face is limiting how many requests this computer can make right now."
+        if not W.current_hf_token():
+            note += " " + W.TOKEN_TIP
+        else:
+            note += " Try again in a little while."
+    return note
 
 
 def _run_downloads(machine: str, items: list[dict]) -> None:
@@ -664,6 +686,7 @@ def _run_top_picks(
             _STATE["top_picks"]["error"] = None
             _STATE["top_picks"]["message"] = "Looking up popular models that should fit…"
         cfg = _reload_cfg()
+        W.reset_hf_budget()
         data = W.collect_top_picks(
             cfg,
             machine,
@@ -676,7 +699,7 @@ def _run_top_picks(
         with _LOCK:
             _STATE["top_picks"]["data"] = data
             _STATE["top_picks"]["status"] = "done"
-            _STATE["top_picks"]["message"] = "Here are popular models that should fit. Nothing has been downloaded."
+            _STATE["top_picks"]["message"] = "Here are popular models that should fit. Nothing has been downloaded." + _search_notice(data)
     except Exception as exc:  # noqa: BLE001
         with _LOCK:
             _STATE["top_picks"]["status"] = "error"
@@ -1552,6 +1575,7 @@ def main() -> int:
 
     global CONFIG_PATH
     CONFIG_PATH = args.config
+    W.set_hf_token_root(ROOT)
 
     if not CONFIG_PATH.exists():
         print(f"Could not find the settings file: {CONFIG_PATH}", file=sys.stderr)
