@@ -14,6 +14,20 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 
+def quiet_hf_network_layer() -> None:
+    """Tests never wait: no pacing, no caching between tests, no real sleeps."""
+    import watcher as W
+
+    W.HF_PACING_SECONDS = 0
+    W.HF_CACHE_TTL = 0
+    W._HF_SLEEP = lambda seconds: None
+    W.clear_hf_cache()
+    W.reset_hf_budget()
+
+
+quiet_hf_network_layer()
+
+
 def sample_config() -> dict:
     import watcher as W
 
