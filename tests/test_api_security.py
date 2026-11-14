@@ -34,13 +34,13 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertIn(self.token, html)
         self.assertNotIn(self.A.CSRF_PLACEHOLDER, html)
         self.assertIn("ModelRepoFinder", html)
-        self.assertIn("v1.6.2", html)
+        self.assertIn("v" + helpers.app_version(), html)
 
     def test_get_info_ok(self):
         status, data, _ = helpers.http_request(self.port, "GET", "/api/info")
         self.assertEqual(status, 200)
         self.assertEqual(data.get("app"), "ModelRepoFinder")
-        self.assertEqual(data.get("version"), "1.6.2")
+        self.assertEqual(data.get("version"), helpers.app_version())
         # The token itself must not be offered to a GET of the JSON API.
         blob = str(data)
         self.assertNotIn(self.token, blob)
@@ -52,6 +52,7 @@ class ApiBoundaryTests(unittest.TestCase):
             "/api/settings",
             body={"machine": "mac_16gb"},
             headers={"Content-Type": "application/json"},
+            expect_reject=True,
         )
         self.assertEqual(status, 403)
         self.assertIn("token", data.get("error", "").lower())
@@ -70,6 +71,7 @@ class ApiBoundaryTests(unittest.TestCase):
             "/api/settings",
             body={"machine": "mac_16gb"},
             headers={"Content-Type": "application/json", "X-MRF-Token": "not-the-right-token"},
+            expect_reject=True,
         )
         self.assertEqual(status, 403)
 
@@ -87,13 +89,14 @@ class ApiBoundaryTests(unittest.TestCase):
             body={"machine": "mac_16gb"},
             headers={"Content-Type": "application/json", "X-MRF-Token": self.token},
             host="evil.example:80",
+            expect_reject=True,
         )
         self.assertEqual(status, 403)
         self.assertIn("Host", data.get("error", ""))
 
     def test_bad_host_on_get_rejected(self):
         status, data, raw = helpers.http_request(
-            self.port, "GET", "/", host="evil.example"
+            self.port, "GET", "/", host="evil.example", expect_reject=True
         )
         self.assertEqual(status, 403)
         self.assertNotIn(self.token.encode(), raw)
@@ -109,6 +112,7 @@ class ApiBoundaryTests(unittest.TestCase):
                 "X-MRF-Token": self.token,
                 "Origin": "http://evil.example",
             },
+            expect_reject=True,
         )
         self.assertEqual(status, 403)
         self.assertIn("Origin", data.get("error", ""))
