@@ -312,15 +312,95 @@
       padding: 0.05rem 0.5rem;
       margin-left: 0.35rem;
     }
+    .tabs { flex-wrap: wrap; }
+    .hw-box {
+      margin-top: 0.9rem;
+      padding: 0.8rem 0.95rem;
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      background: #fbf6ee;
+    }
+    .hw-summary { font-weight: 600; color: var(--plum-dark); }
+    .cap-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; margin-top: 0.6rem; }
+    .cap-row .cap-field { min-width: 10rem; }
+    .cap-row input { width: 9rem; }
+    .setup-card h2, .lib-head h2 {
+      font-family: Palatino, Georgia, serif;
+      font-size: 1.3rem;
+      margin: 0 0 0.4rem;
+      color: var(--plum-dark);
+    }
+    .setup-card ul { margin: 0.5rem 0 0.2rem; padding-left: 1.2rem; }
+    .setup-card li { margin: 0.2rem 0; }
+    .progress-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+      gap: 0.5rem 1rem;
+      margin-top: 0.7rem;
+      font-size: 0.95rem;
+    }
+    .progress-grid .k { display: block; color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
+    .progress-grid .v { font-weight: 600; color: var(--ink); }
+    .progress-files { list-style: none; padding: 0; margin: 0.6rem 0 0; font-size: 0.86rem; color: var(--muted); }
+    .progress-files li { margin: 0.15rem 0; }
+    .bar.overall { height: 6px; margin-top: 0.45rem; }
+    #progress-stall { margin: 0.7rem 0 0; }
+    .lib-stats { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.6rem 0; }
+    .lib-stat { background: #fbf6ee; border: 1px solid var(--line); border-radius: 10px; padding: 0.3rem 0.7rem; font-size: 0.88rem; }
+    .lib-controls { display: grid; gap: 0.6rem; margin-top: 0.4rem; }
+    @media (min-width: 720px) { .lib-controls { grid-template-columns: 2fr 1fr 1fr; } }
+    .table-wrap {
+      overflow: auto;
+      max-height: 70vh;
+      margin-top: 0.8rem;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+    table.lib { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    table.lib th {
+      position: sticky;
+      top: 0;
+      background: #efe6d8;
+      color: var(--plum-dark);
+      text-align: left;
+      padding: 0.5rem 0.55rem;
+      white-space: nowrap;
+      z-index: 1;
+    }
+    table.lib th button {
+      background: none;
+      border: none;
+      padding: 0;
+      font: inherit;
+      font-weight: 600;
+      color: inherit;
+      cursor: pointer;
+    }
+    table.lib td { padding: 0.45rem 0.55rem; border-top: 1px solid var(--line); vertical-align: top; }
+    table.lib td.where { font-size: 0.78rem; color: var(--muted); word-break: break-all; min-width: 14rem; }
+    table.lib td.num { white-space: nowrap; text-align: right; }
+    table.lib td .actions { margin-top: 0; flex-wrap: nowrap; }
+    table.lib td .actions button { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+    table.lib { min-width: 62rem; }
+    table.lib td:first-child { min-width: 11rem; word-break: break-word; }
+    table.lib td .actions button { white-space: nowrap; }
+    table.lib td.date { white-space: nowrap; }
+    .pill { display: inline-block; font-size: 0.75rem; border-radius: 999px; padding: 0.05rem 0.5rem; background: #eee6f0; color: var(--plum-dark); white-space: nowrap; }
+    .pill.app { background: #e4f0e8; color: var(--ok); }
+    .pill.maybe { background: #f7efd9; color: #6b4e00; }
+    .pointer-panel { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; justify-content: space-between; }
   </style>
 </head>
 <body>
   <header>
-    <h1>ModelRepoFinder <span class="ver" id="version-label">v1.6.2</span></h1>
+    <h1>ModelRepoFinder <span class="ver" id="version-label">v1.7</span></h1>
     <p class="tagline">Find open-source models and GitHub projects that fit your house, then download only the ones you approve. Nothing leaves this computer except requests to Hugging Face or GitHub.</p>
     <div class="tabs" role="tablist">
-      <button type="button" role="tab" id="tab-hf" aria-selected="true" aria-controls="pane-hf">Hugging Face models</button>
+      <button type="button" role="tab" id="tab-sched" aria-selected="true" aria-controls="pane-sched">Schedule</button>
+      <button type="button" role="tab" id="tab-hf" aria-selected="false" aria-controls="pane-hf">Models</button>
       <button type="button" role="tab" id="tab-gh" aria-selected="false" aria-controls="pane-gh">GitHub repos</button>
+      <button type="button" role="tab" id="tab-lib" aria-selected="false" aria-controls="pane-lib">My Library</button>
     </div>
   </header>
   <main>
@@ -342,10 +422,62 @@
       <div class="actions">
         <button type="button" class="secondary" id="save-folder">Save folder</button>
       </div>
+      <div class="hw-box" id="hw-box">
+        <div><span class="hw-summary" id="hw-title">This computer</span></div>
+        <p class="hint" id="hw-summary-text" style="color:var(--ink);">Checking this computer…</p>
+        <p class="hint" id="hw-explain"></p>
+        <p class="hint" id="hw-notes"></p>
+        <div class="cap-row">
+          <div class="cap-field">
+            <label for="cap-input">Largest model to look for (GB)</label>
+            <input id="cap-input" type="number" min="0.5" max="1024" step="0.5">
+          </div>
+          <button type="button" class="secondary" id="cap-save">Save limit</button>
+          <button type="button" class="linkish" id="cap-reset">Use the suggested limit</button>
+          <button type="button" class="linkish" id="hw-redetect">Check this computer again</button>
+        </div>
+        <p class="hint">The app read this from the computer itself. It stays on this computer and is never sent anywhere. If it guessed wrong, type your own limit, or pick a different computer in the list above.</p>
+      </div>
+    </section>
+
+    <section class="panel" id="progress-panel" hidden>
+      <strong id="progress-label">Working…</strong>
+      <div class="bar" aria-hidden="true"><span id="progress-bar"></span></div>
+      <div class="progress-grid hidden" id="progress-grid">
+        <div><span class="k">Done</span><span class="v" id="pg-done">–</span></div>
+        <div><span class="k">Speed</span><span class="v" id="pg-speed">–</span></div>
+        <div><span class="k">Time left</span><span class="v" id="pg-eta">–</span></div>
+        <div id="pg-overall-wrap"><span class="k">Whole batch</span><span class="v" id="pg-overall">–</span>
+          <div class="bar overall" aria-hidden="true"><span id="pg-overall-bar"></span></div>
+        </div>
+      </div>
+      <div class="banner warn hidden" id="progress-stall"></div>
+      <ul class="progress-files" id="progress-files"></ul>
+      <p class="hint" id="progress-text"></p>
+      <pre class="log" id="progress-log" hidden></pre>
+      <p style="margin:0.7rem 0 0;">
+        <button type="button" class="secondary hidden" id="retry-failed">Retry failed</button>
+      </p>
+    </section>
+
+    <div id="pane-sched" role="tabpanel">
+    <section class="panel setup-card hidden" id="sched-setup">
+      <h2>Keep fresh models ready, automatically</h2>
+      <p>While this app is open, it can check for new models on a schedule you choose and download the ones that fit this computer, so you always have working models, even if the internet goes down later.</p>
+      <ul>
+        <li>You choose how often, which kinds of models, and how much space it may use.</li>
+        <li>It only tidies away models it downloaded itself, and it moves them to a "retired" folder instead of deleting them.</li>
+        <li>You can try a <strong>dry run</strong> first to see what would happen, without downloading anything.</li>
+      </ul>
+      <div class="actions">
+        <button type="button" id="sched-setup-start">Set up the schedule</button>
+        <button type="button" class="secondary" id="sched-setup-skip">Not now, show me models</button>
+      </div>
     </section>
 
     <section class="panel" id="schedule-panel">
       <h2>Scheduled auto-scan</h2>
+      <p class="hint"><button type="button" class="linkish" id="sched-collapse">Hide these settings</button></p>
       <p class="hint">
         While this app is open, it can look for new models on a schedule you set,
         download ones that match your conditions (up to the limits you choose),
@@ -487,18 +619,9 @@
       <p class="hint">Recent scheduled runs, dry runs, and what was added, retired, or deleted.</p>
       <div class="sched-log" id="sched-log"><p class="hint">No runs yet.</p></div>
     </section>
+    </div>
 
-    <section class="panel" id="progress-panel" hidden>
-      <strong id="progress-label">Working…</strong>
-      <div class="bar" aria-hidden="true"><span id="progress-bar"></span></div>
-      <p class="hint" id="progress-text"></p>
-      <pre class="log" id="progress-log" hidden></pre>
-      <p style="margin:0.7rem 0 0;">
-        <button type="button" class="secondary hidden" id="retry-failed">Retry failed</button>
-      </p>
-    </section>
-
-    <div id="pane-hf" role="tabpanel">
+    <div id="pane-hf" role="tabpanel" class="hidden">
       <section class="panel">
         <label for="hf-paste">Paste any Hugging Face link</label>
         <p class="hint">A model page, an org/name like openai/whisper-tiny, or a /tree/main or /blob/… link all work. Check first — nothing downloads until you approve it.</p>
@@ -570,24 +693,9 @@
         </div>
       </section>
       <section id="hf-results"></section>
-      <section class="panel" id="installed-panel">
-        <h2 style="font-family: Palatino, Georgia, serif; font-size: 1.25rem; margin: 0 0 0.4rem; color: var(--plum-dark);">Models on this computer</h2>
-        <p class="hint">This is a read-only look at models already here: ones this app downloaded, plus any it finds in the Hugging Face cache, Ollama, LM Studio, and folders you add. Retire is only offered for models this app manages, and it moves them — it never deletes anything, and it will not touch files outside this app's own folders.</p>
-        <div class="row two" style="margin-top:0.6rem;">
-          <div>
-            <label for="scan-folder">Add a folder to scan</label>
-            <input id="scan-folder" type="text" placeholder="Paste a folder that already holds models" spellcheck="false">
-          </div>
-          <div style="display:flex;align-items:flex-end;gap:0.5rem;flex-wrap:wrap;">
-            <button type="button" class="secondary" id="add-scan-folder">Add folder</button>
-            <button type="button" class="secondary" id="rescan-local">Scan this computer</button>
-          </div>
-        </div>
-        <p class="hint" id="scan-folders-hint"></p>
-        <div id="local-models-list"><p class="hint">Click Scan this computer to look for models already here. Nothing is moved or deleted.</p></div>
-        <h3 style="font-family: Palatino, Georgia, serif; font-size: 1.05rem; margin: 1.1rem 0 0.35rem; color: var(--plum-dark);">Downloaded with this app</h3>
-        <p class="hint">Retire moves a model into the retired folder. It is never deleted.</p>
-        <ul class="installed" id="installed-list"><li>Nothing downloaded yet.</li></ul>
+      <section class="panel pointer-panel">
+        <p class="hint" id="hf-local-count" style="margin:0;">Models already on this computer are marked "Already on this computer" in the suggestions.</p>
+        <button type="button" class="secondary" data-goto="lib">Open My Library</button>
       </section>
     </div>
 
@@ -643,10 +751,75 @@
         </div>
       </section>
       <section id="gh-results"></section>
+      <section class="panel pointer-panel">
+        <p class="hint" id="gh-local-count" style="margin:0;">Projects already on this computer (cloned with git, or downloaded as a zip) are marked in the suggestions and skipped when you refresh.</p>
+        <button type="button" class="secondary" data-goto="lib">Open My Library</button>
+      </section>
+    </div>
+
+    <div id="pane-lib" role="tabpanel" class="hidden">
       <section class="panel">
-        <h2 style="font-family: Palatino, Georgia, serif; font-size: 1.25rem; margin: 0 0 0.4rem; color: var(--plum-dark);">Already downloaded repos</h2>
-        <p class="hint">Update runs git pull when git was used, or re-downloads the zip if it was not. Retire moves the folder; it is never deleted.</p>
-        <ul class="installed" id="gh-installed-list"><li>Nothing downloaded yet.</li></ul>
+        <div class="lib-head">
+          <h2>My Library</h2>
+          <p class="hint">Everything on this computer in one list: models and code projects, the ones this app downloaded and the ones it found elsewhere (the Hugging Face cache, Ollama, LM Studio, GitHub Desktop and other project folders, Downloads, and folders you add). Looking is read-only. Retire and Update are only offered for things this app downloaded, and Retire moves them, it never deletes.</p>
+        </div>
+        <div class="lib-stats" id="lib-stats"></div>
+        <div class="lib-controls">
+          <div>
+            <label for="lib-search">Search</label>
+            <input id="lib-search" type="text" placeholder="Type part of a name, folder, or category" autocomplete="off" spellcheck="false">
+          </div>
+          <div>
+            <label for="lib-kind">Show</label>
+            <select id="lib-kind">
+              <option value="">Models and code projects</option>
+              <option value="model">Models only</option>
+              <option value="repo">Code projects only</option>
+            </select>
+          </div>
+          <div>
+            <label for="lib-origin">From</label>
+            <select id="lib-origin">
+              <option value="">Anywhere</option>
+              <option value="app">Downloaded with this app</option>
+              <option value="found">Found on this computer</option>
+            </select>
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" id="lib-export">Export to a spreadsheet (CSV)</button>
+          <button type="button" class="secondary" id="rescan-local">Scan this computer again</button>
+        </div>
+        <p class="hint">The spreadsheet file opens in Excel, Numbers, or Google Sheets. It includes what you see after search and filters.</p>
+        <div class="table-wrap">
+          <table class="lib" id="lib-table">
+            <thead>
+              <tr>
+                <th><button type="button" data-sort="name">Name</button></th>
+                <th><button type="button" data-sort="type_label">Type</button></th>
+                <th><button type="button" data-sort="source_label">Where it came from</button></th>
+                <th><button type="button" data-sort="category">Category</button></th>
+                <th><button type="button" data-sort="size_gb">Size</button></th>
+                <th><button type="button" data-sort="format">Format</button></th>
+                <th><button type="button" data-sort="date">Date</button></th>
+                <th><button type="button" data-sort="location">Location</button></th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="lib-body"><tr><td colspan="9" class="hint">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <p class="hint" id="lib-notes"></p>
+        <div class="row two" style="margin-top:1rem;">
+          <div>
+            <label for="scan-folder">Add a folder to look in</label>
+            <input id="scan-folder" type="text" placeholder="Paste a folder that holds models or code projects" spellcheck="false">
+          </div>
+          <div style="display:flex;align-items:flex-end;gap:0.5rem;flex-wrap:wrap;">
+            <button type="button" class="secondary" id="add-scan-folder">Add folder</button>
+          </div>
+        </div>
+        <p class="hint" id="scan-folders-hint"></p>
       </section>
     </div>
 
@@ -662,7 +835,13 @@
     const $ = (id) => document.getElementById(id);
     let info = null;
     let pollTimer = null;
-    let tab = "hf";
+    let tab = "sched";
+    const TABS = ["sched", "hf", "gh", "lib"];
+    let libRows = [];
+    let libLoaded = false;
+    let libSort = { key: "date", dir: -1 };
+    let schedFormOpen = false;
+    let wasBusy = false;
 
     const fmtBytes = (gb, bytes) => {
       if (typeof gb === "number") {
@@ -706,11 +885,13 @@
     }
 
     function switchTab(next) {
+      if (TABS.indexOf(next) < 0) next = "sched";
       tab = next;
-      $("tab-hf").setAttribute("aria-selected", next === "hf" ? "true" : "false");
-      $("tab-gh").setAttribute("aria-selected", next === "gh" ? "true" : "false");
-      $("pane-hf").classList.toggle("hidden", next !== "hf");
-      $("pane-gh").classList.toggle("hidden", next !== "gh");
+      TABS.forEach((t) => {
+        $("tab-" + t).setAttribute("aria-selected", t === next ? "true" : "false");
+        $("pane-" + t).classList.toggle("hidden", t !== next);
+      });
+      if (next === "lib") loadLibrary();
     }
 
     function fillMachines(current) {
@@ -731,13 +912,53 @@
     }
     function updateMachineHint() {
       const m = currentMachineInfo();
-      if (!m) { $("machine-hint").textContent = ""; return; }
+      if (!m) { $("machine-hint").textContent = ""; renderHardware(); return; }
       const mem = m.vram_gb ? (m.vram_gb + " GB memory, ") : "";
       const fmts = (m.formats || []).map((f) => f.toUpperCase()).join(" and ");
       let text = "Fits models up to about " + m.max_model_gb + " GB (" + mem + fmts + ").";
-      if (info.suggested_machine === m.key) text += " Suggested for this computer (" + info.os + ").";
+      if (m.detected) text = "Set up from this computer's own memory and graphics card. " + text;
+      else if (info.suggested_machine === m.key) text += " Suggested for this computer (" + info.os + ").";
       if (m.note) text += " " + m.note;
       $("machine-hint").textContent = text;
+      renderHardware();
+    }
+    function renderHardware() {
+      const hw = (info && info.hardware) || {};
+      const m = currentMachineInfo() || {};
+      const detected = !!m.detected;
+      $("hw-title").textContent = detected ? "This computer (detected)" : ("Using a preset: " + (m.name || ""));
+      $("hw-summary-text").textContent = "What the app found: " + (hw.summary || "nothing yet");
+      let explain = "";
+      if (detected) {
+        explain = hw.explanation || "";
+        if (m.cap_source === "yours" && m.suggested_max_model_gb) {
+          explain = "You set this limit yourself. The suggested limit for this computer is " + m.suggested_max_model_gb + " GB.";
+        } else if (m.cap_source === "fallback") {
+          explain = (hw.explanation || "") + " Until then, the app uses a careful " + m.max_model_gb + " GB limit.";
+        }
+      } else {
+        explain = "This preset looks for models up to about " + m.max_model_gb + " GB. Pick “This computer (detected)” in the list to use what the app found instead.";
+      }
+      $("hw-explain").textContent = explain;
+      $("hw-notes").textContent = detected ? (hw.notes || []).join(" ") : "";
+      const input = $("cap-input");
+      if (document.activeElement !== input) input.value = (m.max_model_gb != null) ? m.max_model_gb : "";
+      $("cap-reset").classList.toggle("hidden", !(detected && m.cap_source === "yours"));
+    }
+    async function saveCap(value) {
+      const machine = $("machine").value;
+      try {
+        info = await api("/api/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ machine, max_model_gb: value })
+        });
+        fillMachines(machine);
+        renderSchedule(info.schedule);
+        setBanner("ok", value === null
+          ? "Back to the suggested limit for this computer."
+          : "Saved. The app will look for models up to about " + value + " GB on this computer.");
+      } catch (err) { setBanner("err", err.message); }
     }
 
     function renderCategories(scope) {
@@ -856,92 +1077,9 @@
       }
     }
 
-    function renderInstalled(list) {
-      const ul = $("installed-list");
-      ul.innerHTML = "";
-      if (!list || !list.length) {
-        ul.innerHTML = "<li>Nothing downloaded yet.</li>";
-        return;
-      }
-      list.forEach((item) => {
-        const li = document.createElement("li");
-        const left = document.createElement("div");
-        const title = document.createElement("div");
-        title.textContent = item.name + "  ·  " + item.tag + "  ·  " + fmtBytes(item.size_gb);
-        if (item.auto_managed) {
-          const badge = document.createElement("span");
-          badge.className = "badge-auto";
-          badge.textContent = "auto-managed";
-          title.appendChild(badge);
-        }
-        const path = document.createElement("div");
-        path.className = "path";
-        path.textContent = item.path;
-        left.appendChild(title);
-        left.appendChild(path);
-        const actions = document.createElement("div");
-        actions.className = "actions";
-        actions.style.marginTop = "0";
-        const opt = document.createElement("button");
-        opt.type = "button";
-        opt.className = "secondary";
-        if (item.auto_managed) {
-          opt.textContent = "Leave auto-cleanup";
-          opt.addEventListener("click", () => scheduleOptOut(item));
-        } else {
-          opt.textContent = "Include in auto-cleanup";
-          opt.addEventListener("click", () => scheduleOptIn(item));
-        }
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "danger";
-        btn.textContent = "Retire";
-        btn.addEventListener("click", () => retireHf(item));
-        actions.appendChild(opt);
-        actions.appendChild(btn);
-        li.appendChild(left);
-        li.appendChild(actions);
-        ul.appendChild(li);
-      });
-    }
-
-    function renderGhInstalled(list) {
-      const ul = $("gh-installed-list");
-      ul.innerHTML = "";
-      if (!list || !list.length) {
-        ul.innerHTML = "<li>Nothing downloaded yet.</li>";
-        return;
-      }
-      list.forEach((item) => {
-        const li = document.createElement("li");
-        const left = document.createElement("div");
-        const title = document.createElement("div");
-        title.textContent = item.name + "  ·  " + item.category + "  ·  " + fmtBytes(item.size_gb) + (item.is_git ? "  ·  git" : "  ·  zip");
-        const path = document.createElement("div");
-        path.className = "path";
-        path.textContent = item.path;
-        left.appendChild(title);
-        left.appendChild(path);
-        const actions = document.createElement("div");
-        actions.className = "actions";
-        actions.style.marginTop = "0";
-        const up = document.createElement("button");
-        up.type = "button";
-        up.className = "secondary";
-        up.textContent = "Update";
-        up.addEventListener("click", () => updateRepo(item));
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "danger";
-        btn.textContent = "Retire";
-        btn.addEventListener("click", () => retireGh(item));
-        actions.appendChild(up);
-        actions.appendChild(btn);
-        li.appendChild(left);
-        li.appendChild(actions);
-        ul.appendChild(li);
-      });
-    }
+    // v1.7: the long "on this computer" lists live in My Library now.
+    function renderInstalled(list) { /* shown in My Library */ }
+    function renderGhInstalled(list) { /* shown in My Library */ }
 
     function moreRecentHf(job) {
       const a = job && job.refresh;
@@ -1138,69 +1276,22 @@
       });
     }
     function renderLocalModels(data) {
-      const root = $("local-models-list");
-      if (!root) return;
-      root.innerHTML = "";
       const items = (data && data.items) || [];
-      const folders = (data && data.scan_folders) || (info && info.scan_folders) || [];
+      const found = items.filter((it) => it.source !== "app").length;
+      const el = $("hf-local-count");
+      if (el && data && data.items) {
+        el.textContent = found
+          ? (found + " model" + (found === 1 ? "" : "s") + " found on this computer outside this app. They are marked “Already on this computer” in the suggestions. See them all in My Library.")
+          : "No models found outside this app yet. Models already on this computer are marked in the suggestions.";
+      }
+      renderScanFolders((data && data.scan_folders) || (info && info.scan_folders) || []);
+    }
+    function renderScanFolders(folders) {
       const hint = $("scan-folders-hint");
-      if (hint) {
-        hint.textContent = folders.length
-          ? ("Extra folders being scanned: " + folders.join(" · "))
-          : "No extra folders yet. Paste a path and click Add folder if your models live somewhere else.";
-      }
-      if (data && data.truncated) {
-        const p = document.createElement("p");
-        p.className = "hint";
-        p.textContent = "The scan stopped early (" + ((data.truncate_reasons || []).join(", ") || "limit reached") + ") so this list may be incomplete.";
-        root.appendChild(p);
-      }
-      if (data && data.errors && data.errors.length) {
-        const p = document.createElement("p");
-        p.className = "hint";
-        p.textContent = data.errors.join(" ");
-        root.appendChild(p);
-      }
-      const found = items.filter((it) => it.source !== "app");
-      if (!found.length) {
-        const p = document.createElement("p");
-        p.className = "hint";
-        p.textContent = "No models were found in the Hugging Face cache, Ollama, LM Studio, or extra folders.";
-        root.appendChild(p);
-        return;
-      }
-      const groups = {};
-      found.forEach((it) => {
-        const key = it.source || "other";
-        (groups[key] = groups[key] || []).push(it);
-      });
-      Object.keys(groups).forEach((source) => {
-        const wrap = document.createElement("div");
-        wrap.className = "local-group";
-        const h = document.createElement("h3");
-        h.textContent = sourceLabel(source);
-        wrap.appendChild(h);
-        const ul = document.createElement("ul");
-        ul.className = "installed";
-        groups[source].forEach((it) => {
-          const li = document.createElement("li");
-          const left = document.createElement("div");
-          const title = document.createElement("div");
-          title.textContent = it.id || it.name || it.path;
-          const path = document.createElement("div");
-          path.className = "path";
-          const size = (typeof it.size_gb === "number" && it.size_gb)
-            ? (it.size_gb >= 1 ? it.size_gb.toFixed(1) + " GB" : (it.size_gb * 1024).toFixed(0) + " MB")
-            : "";
-          path.textContent = (it.path || "") + (size ? "  ·  " + size : "") + (it.format ? "  ·  " + it.format : "");
-          left.appendChild(title);
-          left.appendChild(path);
-          li.appendChild(left);
-          ul.appendChild(li);
-        });
-        wrap.appendChild(ul);
-        root.appendChild(wrap);
-      });
+      if (!hint) return;
+      hint.textContent = (folders && folders.length)
+        ? ("Extra folders being looked in: " + folders.join(" · "))
+        : "No extra folders yet. Paste a path and click Add folder if your models or projects live somewhere else.";
     }
 
     function modelRow(model, tag) {
@@ -1319,7 +1410,14 @@
         const here = document.createElement("span");
         here.className = "badge already";
         here.textContent = "Already on this computer";
+        if (repo.already_local_path) here.title = repo.already_local_path;
         h.appendChild(here);
+      } else if (repo.maybe_local) {
+        const maybe = document.createElement("span");
+        maybe.className = "badge";
+        maybe.textContent = "A folder with this name is on this computer";
+        if (repo.maybe_local_path) maybe.title = repo.maybe_local_path;
+        h.appendChild(maybe);
       }
       const meta = document.createElement("p");
       meta.className = "meta";
@@ -1407,7 +1505,7 @@
           body: JSON.stringify({ machine: item.machine, tag: item.tag, relative_path: item.relative_path })
         });
         setBanner("ok", "Moved to the retired folder: " + data.retired_to);
-        renderInstalled(data.installed);
+        loadLibrary();
       } catch (err) { setBanner("err", err.message); }
     }
     async function retireGh(item) {
@@ -1419,7 +1517,7 @@
           body: JSON.stringify({ category: item.category, tag: item.category, relative_path: item.relative_path })
         });
         setBanner("ok", "Moved to the retired folder: " + data.retired_to);
-        renderGhInstalled(data.github_installed);
+        loadLibrary();
       } catch (err) { setBanner("err", err.message); }
     }
 
@@ -1451,10 +1549,19 @@
       } else {
         panel.hidden = false;
       }
+      let transferJob = null;
+      if (running) {
+        const j = running.j;
+        if (running.kind === "download" && j.current) transferJob = j;
+        else if (j.transfer && j.transfer.status === "running" && j.transfer.current) transferJob = j.transfer;
+      }
+      renderTransfer(transferJob);
       if (running) {
         const j = running.j;
         $("progress-label").textContent = j.message || "Working…";
-        const pct = running.kind === "download" ? (j.percent != null ? j.percent : 15) : 35;
+        let pct = 35;
+        if (transferJob) pct = (transferJob.percent != null && transferJob.total_bytes) ? transferJob.percent : 15;
+        else if (running.kind === "download") pct = j.percent != null ? j.percent : 15;
         $("progress-bar").style.width = pct + "%";
         $("progress-text").textContent = j.message || "";
         if ((j.log || []).length) {
@@ -1464,7 +1571,9 @@
           $("progress-log").hidden = true;
         }
       } else if (erred) {
-        $("progress-label").textContent = "Something went wrong";
+        $("progress-label").textContent = erred.kind === "download"
+          ? "The download stopped because of a problem"
+          : "Something went wrong";
         setBanner("err", erred.j.error || "Please try again.");
         $("progress-text").textContent = erred.j.message || "";
         if ((erred.j.log || []).length) {
@@ -1490,6 +1599,85 @@
       }
     }
 
+    function fmtSize(bytes) {
+      bytes = Number(bytes || 0);
+      if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + " GB";
+      return (bytes / 1048576).toFixed(0) + " MB";
+    }
+    function fmtSpeed(bps) {
+      bps = Number(bps || 0);
+      if (!bps) return "waiting for data…";
+      if (bps >= 1048576) return (bps / 1048576).toFixed(1) + " MB/s";
+      return Math.max(1, Math.round(bps / 1024)) + " KB/s";
+    }
+    function fmtDuration(sec) {
+      if (sec == null) return "working it out…";
+      if (sec < 60) return "under a minute";
+      const m = Math.round(sec / 60);
+      if (m < 60) return "about " + m + " min";
+      const h = Math.floor(m / 60);
+      const mm = m % 60;
+      return "about " + h + " h" + (mm ? " " + mm + " min" : "");
+    }
+    function fmtQuiet(sec) {
+      sec = Number(sec || 0);
+      if (sec < 90) return sec + " seconds";
+      return Math.round(sec / 60) + " minutes";
+    }
+    function renderTransfer(t) {
+      const grid = $("progress-grid");
+      const stall = $("progress-stall");
+      const files = $("progress-files");
+      if (!t) {
+        grid.classList.add("hidden");
+        stall.classList.add("hidden");
+        files.innerHTML = "";
+        return;
+      }
+      grid.classList.remove("hidden");
+      const done = t.downloaded_bytes || 0;
+      const total = t.total_bytes || 0;
+      if (total) {
+        const pct = Math.min(100, (100 * done / total));
+        $("pg-done").textContent = fmtSize(done) + " of " + fmtSize(total) + " (" + pct.toFixed(pct < 10 ? 1 : 0) + "%)";
+      } else {
+        $("pg-done").textContent = fmtSize(done) + " so far";
+      }
+      $("pg-speed").textContent = t.stalled ? "no new data right now" : fmtSpeed(t.speed_bps);
+      if (!total) $("pg-eta").textContent = "unknown (the size was not listed)";
+      else if (t.stalled) $("pg-eta").textContent = "waiting for the connection";
+      else $("pg-eta").textContent = fmtDuration(t.eta_seconds);
+      const count = t.item_count || 0;
+      $("pg-overall-wrap").classList.toggle("hidden", count < 2);
+      if (count >= 2) {
+        let text = "Item " + (t.item_index || 1) + " of " + count;
+        if (t.overall_total_bytes) text += " · " + fmtSize(t.overall_done_bytes) + " of " + fmtSize(t.overall_total_bytes);
+        $("pg-overall").textContent = text;
+        $("pg-overall-bar").style.width = (t.overall_percent != null ? t.overall_percent : (100 * ((t.item_index || 1) - 1) / count)) + "%";
+      }
+      if (t.stalled) {
+        let msg = "Slow connection, still going… No new data has arrived for " + fmtQuiet(t.quiet_seconds) +
+          ". The download has not stopped; it will carry on by itself when data arrives.";
+        if ((t.quiet_seconds || 0) > 600) msg += " If it stays like this for a long time, you can close the app and try again later. Finished files are kept.";
+        stall.textContent = msg;
+        stall.classList.remove("hidden");
+      } else {
+        stall.classList.add("hidden");
+      }
+      files.innerHTML = "";
+      if (t.files_total && t.files_total > 1) {
+        const li = document.createElement("li");
+        li.textContent = "Files finished: " + (t.files_done || 0) + " of " + t.files_total;
+        files.appendChild(li);
+      }
+      (t.active_files || []).forEach((f) => {
+        const li = document.createElement("li");
+        li.textContent = "Now downloading " + f.name + ": " + fmtSize(f.done_bytes) +
+          (f.total_bytes ? " of " + fmtSize(f.total_bytes) + (f.percent != null ? " (" + Math.round(f.percent) + "%)" : "") : "");
+        files.appendChild(li);
+      });
+    }
+
     async function poll() {
       try {
         const job = await api("/api/job");
@@ -1498,13 +1686,13 @@
         if (hfData) renderHfResults(hfData);
         if (job.github_refresh && job.github_refresh.status === "done" && job.github_refresh.data) renderGhResults(job.github_refresh.data);
         if (job.local_models) renderLocalModels(job.local_models);
-        if (job.installed) renderInstalled(job.installed);
-        if (job.github_installed) renderGhInstalled(job.github_installed);
         if (job.schedule && job.schedule.status === "done" && job.schedule.data) {
           renderSchedulePreview(job.schedule.data);
         }
         if (job.schedule_state) renderSchedule(job.schedule_state, { keepForm: true });
         const busy = ["refresh", "download", "github_refresh", "github_download", "top_picks", "schedule"].some((k) => job[k] && job[k].status === "running");
+        if (wasBusy && !busy && libLoaded) loadLibrary();
+        wasBusy = busy;
         if (!busy && pollTimer) {
           clearInterval(pollTimer);
           pollTimer = null;
@@ -1515,12 +1703,221 @@
     }
     function startPolling() {
       if (pollTimer) return;
-      pollTimer = setInterval(poll, 700);
+      pollTimer = setInterval(poll, 1000);
       poll();
     }
 
-    $("tab-hf").addEventListener("click", () => switchTab("hf"));
-    $("tab-gh").addEventListener("click", () => switchTab("gh"));
+    TABS.forEach((t) => $("tab-" + t).addEventListener("click", () => switchTab(t)));
+    document.querySelectorAll("[data-goto]").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.goto)));
+    $("cap-save").addEventListener("click", () => {
+      const raw = ($("cap-input").value || "").trim();
+      const value = Number(raw);
+      if (!raw || !(value > 0)) { setBanner("err", "Type a size in GB, like 9.5."); return; }
+      saveCap(value);
+    });
+    $("cap-reset").addEventListener("click", () => saveCap(null));
+    $("hw-redetect").addEventListener("click", async () => {
+      const machine = $("machine").value;
+      try {
+        setBanner("info", "Checking this computer's memory and graphics card…");
+        info = await api("/api/hardware/detect", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        fillMachines(machine);
+        setBanner("ok", "Checked again: " + ((info.hardware || {}).summary || "done") + ".");
+      } catch (err) { setBanner("err", err.message); }
+    });
+    $("sched-setup-start").addEventListener("click", () => {
+      schedFormOpen = true;
+      updateSchedSetup(info && info.schedule);
+      $("sched-enabled").checked = true;
+    });
+    $("sched-setup-skip").addEventListener("click", () => switchTab("hf"));
+    $("sched-collapse").addEventListener("click", () => {
+      schedFormOpen = false;
+      updateSchedSetup(info && info.schedule);
+    });
+
+    // --- My Library -------------------------------------------------------
+    function libFilters() {
+      return { kind: $("lib-kind").value, origin: $("lib-origin").value, search: ($("lib-search").value || "").trim() };
+    }
+    function libFiltered() {
+      const f = libFilters();
+      const needle = f.search.toLowerCase();
+      return libRows.filter((r) => {
+        if (f.kind && r.kind !== f.kind) return false;
+        if (f.origin && r.origin !== f.origin) return false;
+        if (needle) {
+          const blob = [r.name, r.ident, r.category, r.source_label, r.location, r.format, r.computer].join(" ").toLowerCase();
+          if (blob.indexOf(needle) < 0) return false;
+        }
+        return true;
+      });
+    }
+    function libCompare(a, b) {
+      const k = libSort.key;
+      let x = a[k], y = b[k];
+      if (k === "size_gb") { x = Number(x || 0); y = Number(y || 0); return (x - y) * libSort.dir; }
+      x = String(x || "").toLowerCase();
+      y = String(y || "").toLowerCase();
+      if (x === y) return String(a.name || "").localeCompare(String(b.name || ""));
+      return (x < y ? -1 : 1) * libSort.dir;
+    }
+    function libLink(row) {
+      if (row.ident && /^https:\/\//.test(row.ident)) return row.ident;
+      if (row.kind === "model" && row.ident && /^[\w.-]+\/[\w.-]+$/.test(row.ident) && row.source !== "ollama") {
+        return "https://huggingface.co/" + row.ident;
+      }
+      return "";
+    }
+    function libActions(row) {
+      const wrap = document.createElement("div");
+      wrap.className = "actions";
+      const add = (label, cls, fn) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = cls;
+        b.textContent = label;
+        b.addEventListener("click", fn);
+        wrap.appendChild(b);
+      };
+      if (row.origin === "app" && row.kind === "model") {
+        const item = { machine: row.machine, tag: row.tag, relative_path: row.relative_path, name: row.name, id: row.ident || row.name };
+        if (row.auto_managed) add("Leave cleanup", "secondary", () => scheduleOptOut(item));
+        else add("Include in cleanup", "secondary", () => scheduleOptIn(item));
+        add("Retire", "danger", () => retireHf(item));
+      } else if (row.origin === "app" && row.kind === "repo") {
+        const item = { name: row.relative_path, category: row.tag, relative_path: row.relative_path };
+        add("Update", "secondary", () => updateRepo(item));
+        add("Retire", "danger", () => retireGh(item));
+      }
+      return wrap;
+    }
+    function renderLibStats(sum) {
+      const host = $("lib-stats");
+      host.innerHTML = "";
+      if (!sum) return;
+      const bits = [
+        sum.total + " item" + (sum.total === 1 ? "" : "s"),
+        sum.models + " model" + (sum.models === 1 ? "" : "s"),
+        sum.repos + " code project" + (sum.repos === 1 ? "" : "s"),
+        sum.from_app + " downloaded with this app",
+        sum.found + " found on this computer",
+        (sum.size_gb > 0 ? "about " + fmtBytes(sum.size_gb) + " in total" : "less than 10 MB in total")
+      ];
+      bits.forEach((b) => {
+        const span = document.createElement("span");
+        span.className = "lib-stat";
+        span.textContent = b;
+        host.appendChild(span);
+      });
+    }
+    function renderLibrary() {
+      const body = $("lib-body");
+      body.innerHTML = "";
+      const rows = libFiltered().sort(libCompare);
+      document.querySelectorAll("#lib-table th button[data-sort]").forEach((b) => {
+        const k = b.dataset.sort;
+        b.textContent = b.textContent.replace(/ [▲▼]$/, "") + (k === libSort.key ? (libSort.dir > 0 ? " ▲" : " ▼") : "");
+      });
+      if (!rows.length) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 9;
+        td.className = "hint";
+        td.textContent = libRows.length ? "Nothing matches your search or filters." : "Nothing found yet. Click Scan this computer again, or add a folder below.";
+        tr.appendChild(td);
+        body.appendChild(tr);
+        return;
+      }
+      rows.forEach((r) => {
+        const tr = document.createElement("tr");
+        const cell = (text, cls) => {
+          const td = document.createElement("td");
+          if (cls) td.className = cls;
+          if (text instanceof Node) td.appendChild(text); else td.textContent = text == null ? "" : String(text);
+          tr.appendChild(td);
+          return td;
+        };
+        const link = libLink(r);
+        if (link) {
+          const a = document.createElement("a");
+          a.href = link;
+          a.target = "_blank";
+          a.rel = "noopener";
+          a.textContent = r.name || r.ident;
+          cell(a);
+        } else {
+          cell(r.name || "");
+        }
+        cell(r.kind === "model" ? "Model" : "Code project");
+        const src = document.createElement("span");
+        src.className = "pill" + (r.origin === "app" ? " app" : "");
+        src.textContent = r.source_label || r.source || "";
+        const srcCell = cell(src);
+        if (r.auto_managed) {
+          const b = document.createElement("span");
+          b.className = "badge-auto";
+          b.textContent = "auto-managed";
+          srcCell.appendChild(b);
+        }
+        cell(r.category || "");
+        cell(r.size_gb ? fmtBytes(r.size_gb) + (r.size_complete === false ? "+" : "") : "", "num");
+        cell((r.format || "").toUpperCase());
+        const dateCell = cell(r.date_label || "", "date");
+        dateCell.title = r.origin === "app" ? "Downloaded (or first seen by this app)" : "First seen by this app";
+        cell(r.location || "", "where");
+        cell(libActions(r));
+        body.appendChild(tr);
+      });
+    }
+    async function loadLibrary() {
+      try {
+        const data = await api("/api/library");
+        libRows = data.rows || [];
+        libLoaded = true;
+        renderLibStats(data.summary);
+        $("lib-notes").textContent = (data.notes || []).join(" ");
+        renderScanFolders(data.scan_folders || []);
+        renderLibrary();
+      } catch (err) { setBanner("err", err.message); }
+    }
+    async function exportLibrary() {
+      try {
+        const res = await fetch("/api/library/export", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-MRF-Token": window.MRF_TOKEN },
+          body: JSON.stringify(libFilters())
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || ("Export failed (" + res.status + ")"));
+        }
+        const blob = await res.blob();
+        const cd = res.headers.get("Content-Disposition") || "";
+        const m = /filename="([^"]+)"/.exec(cd);
+        const name = m ? m[1] : "ModelRepoFinder-library.csv";
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        setBanner("ok", "Saved " + name + " (usually in your Downloads folder). It opens in Excel, Numbers, or Google Sheets.");
+      } catch (err) { setBanner("err", err.message); }
+    }
+    document.querySelectorAll("#lib-table th button[data-sort]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const k = b.dataset.sort;
+        if (libSort.key === k) libSort.dir = -libSort.dir;
+        else libSort = { key: k, dir: (k === "date" || k === "size_gb") ? -1 : 1 };
+        renderLibrary();
+      });
+    });
+    ["lib-kind", "lib-origin"].forEach((id) => $(id).addEventListener("change", renderLibrary));
+    $("lib-search").addEventListener("input", renderLibrary);
+    $("lib-export").addEventListener("click", exportLibrary);
     $("machine").addEventListener("change", async () => {
       updateMachineHint();
       try {
@@ -1533,10 +1930,9 @@
         renderCategories("github");
         $("hf-results").innerHTML = "";
         $("gh-results").innerHTML = "";
-        renderInstalled(info.installed || []);
-        renderGhInstalled(info.github_installed || []);
         renderLocalModels(info.local_models || {});
         renderSchedule(info.schedule);
+        if (libLoaded) loadLibrary();
         setBanner("info", "Computer changed. Category ticks above are the ones saved for this computer. Click Refresh suggestions to search.");
       } catch (err) { setBanner("err", err.message); }
     });
@@ -1623,15 +2019,17 @@
     });
     $("rescan-local").addEventListener("click", async () => {
       try {
-        setBanner("info", "Scanning this computer for models. This is read-only — nothing is moved or deleted.");
+        setBanner("info", "Looking for models and code projects on this computer. This is read-only — nothing is moved or deleted.");
+        $("rescan-local").disabled = true;
         const data = await api("/api/local-scan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ force: true })
         });
         renderLocalModels(data);
-        const n = (data.items || []).length;
-        setBanner("ok", n ? ("Found " + n + " model" + (n === 1 ? "" : "s") + " on this computer.") : "No extra models were found on this computer.");
+        await loadLibrary();
+        $("rescan-local").disabled = false;
+        setBanner("ok", "Finished looking. My Library lists " + libRows.length + " item" + (libRows.length === 1 ? "" : "s") + ".");
       } catch (err) { setBanner("err", err.message); }
     });
     $("add-scan-folder").addEventListener("click", async () => {
@@ -1653,7 +2051,8 @@
           body: JSON.stringify({ force: true })
         });
         renderLocalModels(scanned);
-        setBanner("ok", "Folder added and scanned. Models found there will be marked in the suggestions.");
+        await loadLibrary();
+        setBanner("ok", "Folder added and scanned. Models and projects found there are in My Library and marked in the suggestions.");
       } catch (err) { setBanner("err", err.message); }
     });
     $("save-token").addEventListener("click", async () => {
@@ -2081,6 +2480,16 @@
       bits.push("Auto-managed models: " + (state.tracked_count || 0) + " (about " + (state.tracked_disk_gb || 0) + " GB).");
       $("sched-meta").textContent = bits.join(" ");
       renderScheduleLog(state.log || []);
+      updateSchedSetup(state);
+    }
+    function updateSchedSetup(state) {
+      state = state || {};
+      const s = state.settings || state || {};
+      const fresh = !s.enabled && !state.last_run && !state.last_attempt && !((state.log || []).length);
+      const showSetup = fresh && !schedFormOpen;
+      $("sched-setup").classList.toggle("hidden", !showSetup);
+      $("schedule-panel").classList.toggle("hidden", showSetup);
+      $("sched-collapse").parentElement.classList.toggle("hidden", !fresh);
     }
     function renderScheduleLog(entries) {
       const host = $("sched-log");
@@ -2203,7 +2612,6 @@
           body: JSON.stringify(body)
         });
         renderSchedule(info.schedule);
-        renderInstalled(info.installed || []);
         const on = info.schedule && info.schedule.enabled;
         setBanner("ok", on
           ? "Schedule saved. Turning it on is standing approval to download matching models while this app is open."
@@ -2234,7 +2642,7 @@
             id: item.id || item.name
           })
         });
-        renderInstalled(info.installed || []);
+        loadLibrary();
         renderSchedule(info.schedule, { keepForm: true });
         setBanner("ok", "“" + item.name + "” is now included in auto-cleanup. The schedule may retire or delete it according to your cleanup settings.");
       } catch (err) { setBanner("err", err.message); }
@@ -2250,7 +2658,7 @@
             relative_path: item.relative_path
           })
         });
-        renderInstalled(info.installed || []);
+        loadLibrary();
         renderSchedule(info.schedule, { keepForm: true });
         setBanner("ok", "“" + item.name + "” will no longer be cleaned up automatically.");
       } catch (err) { setBanner("err", err.message); }
@@ -2272,16 +2680,16 @@
         (async function init() {
       try {
         info = await api("/api/info");
-        $("version-label").textContent = "v" + (info.version || "1.6.2");
+        $("version-label").textContent = "v" + (info.version || "1.7");
         fillMachines(info.machine || info.suggested_machine);
         $("base-folder").value = info.base_folder || "";
         $("path-hint").textContent = (info.base_folder || ".") + "/incoming/<computer>/<tag>/";
         $("gh-path-hint").textContent = (info.base_folder || ".") + "/incoming/github/<tag>/";
         renderCategories("hf");
         renderCategories("github");
-        renderInstalled(info.installed || []);
-        renderGhInstalled(info.github_installed || []);
+        renderLocalModels(info.local_models || {});
         renderSchedule(info.schedule);
+        switchTab("sched");
         if (info.github_token_set) {
           $("gh-token-hint").textContent = "A token is already saved on this computer. Leave the box blank and click Save token to clear it.";
         }
