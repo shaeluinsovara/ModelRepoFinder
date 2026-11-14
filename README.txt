@@ -1,4 +1,4 @@
-ModelRepoFinder  v1.6.1
+ModelRepoFinder  v1.6.2
 =======================
 
 This little app looks up open-source AI models on Hugging Face, and
@@ -11,8 +11,29 @@ also in this folder (and on GitHub) if you prefer that format.
 
 
 
-What is new in v1.6.1
+What is new in v1.6.2
 ---------------------
+  • Scheduled downloads finish again. The app was passing a progress
+    option that the tested Hugging Face library (version 0.36.2) does not
+    accept, so single-file downloads stopped with "unexpected keyword
+    argument 'tqdm_class'". That is fixed.
+  • When Hugging Face says "too many requests" (a rate limit), the app
+    waits and tries again, spaces its requests out, and stops waiting
+    after about two minutes per run. Search results are remembered for
+    20 minutes, so a dry run and a real run do not ask twice.
+  • If part of a search fails, the run still downloads the models it did
+    find (within your limits) and the log says "search incomplete".
+    Cleanup is skipped on those runs. If nothing was found because of a
+    rate limit, the app tries again in about an hour.
+  • Failed downloads show a short, plain reason.
+  • A saved Hugging Face token is now used for searches too, which raises
+    the limit. Get one free: make an account at huggingface.co, open
+    Settings > Access Tokens, create a token with the Read role, and
+    paste it into the app.
+
+
+What was new in v1.6.1
+----------------------
   • On a Mac, /etc is a shortcut to /private/etc. The app now checks both
     the folder path you typed and the real folder it points to, so system
     locations such as /etc are still refused. Folders under your home
@@ -242,12 +263,15 @@ Paste any Hugging Face link / Check
     "Whole repo". A warning appears if it is larger than this computer
     can comfortably run, but the download is not blocked.
 
-Optional Hugging Face token
-    Only needed for gated models. Open the model page in your browser,
-    accept the license, create an access token on huggingface.co, and
-    paste it here. It is saved only on this computer, in a hidden local
-    file, and is sent only to Hugging Face. Leave the box blank unless
-    you need it.
+Optional Hugging Face token (recommended)
+    Raises how many requests Hugging Face allows before it says "too
+    many requests", and is needed for gated models. To get one: make a
+    free account at huggingface.co, open Settings > Access Tokens,
+    create a token with the Read role, and paste it here. For gated
+    models, also accept the license on the model's page. It is saved
+    only on this computer (system keychain if available, otherwise a
+    hidden file only your user can read) and is sent only to Hugging
+    Face.
 
 Refresh suggestions
     Looks up items that fit the ticked categories. This can take a few

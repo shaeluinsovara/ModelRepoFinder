@@ -4,7 +4,7 @@ A small local app that helps you find open-source AI models on [Hugging Face](ht
 
 Nothing is downloaded until you say so. The same folder works on Windows and macOS.
 
-This is **v1.6.1**. It keeps every v1.4 safety check and the v1.5 finder features, and adds a scheduled auto-scan that can download matching models and tidy out-of-date ones while the app is open. v1.6.1 fixes a Mac bug that could allow the system folder `/etc` to be scanned.
+This is **v1.6.2**. It keeps every v1.4 safety check and the v1.5 finder features, and has a scheduled auto-scan that can download matching models and tidy out-of-date ones while the app is open. v1.6.2 makes scheduled downloads actually finish: it fixes a download bug with the tested library versions and handles Hugging Face rate limits gracefully.
 
 ## Screenshots
 
@@ -75,7 +75,7 @@ The interface shows **on-disk size** and a **rough estimate** of the memory need
 
 You can use the app without any tokens.
 
-- A **Hugging Face token** is only needed for gated models. Open the model page in your browser, accept the license, then paste an access token from huggingface.co. It is saved only on this computer (in a hidden local file, or in the system keychain if the optional `keyring` package is already installed), and is sent only to Hugging Face. The file is limited to your user account where the operating system allows it.
+- A **Hugging Face token** is recommended, and needed for gated models. With a token, Hugging Face lets the app make many more requests before it answers "too many requests" (HTTP 429), which matters for big searches and the scheduled auto-scan. To get one: make a free account at huggingface.co, open **Settings > Access Tokens**, create a token with the **Read** role, and paste it into the app. For gated models, also open the model page in your browser and accept the license. It is saved only on this computer (in a hidden local file, or in the system keychain if the optional `keyring` package is already installed), and is sent only to Hugging Face. The file is limited to your user account where the operating system allows it.
 - A **GitHub token** is only needed if GitHub starts refusing searches (unauthenticated search is rate-limited). A personal access token (classic, public-repo read is enough) is saved the same way as the Hugging Face token, and is sent only to GitHub.
 
 Neither file is included in this repository. Leave the boxes blank unless you need them.
@@ -108,6 +108,13 @@ You do not have to be a programmer to change those numbers. Downloads go under `
 Leave the command or Terminal window open and read the message. Check that you are online. If a Hugging Face download fails, wait for the automatic retries, then click **Retry failed** if that button appears. Close the window and start the app again only if it will not open, or if Retry failed does not help.
 
 A plain-language copy of these instructions also lives in `README.txt`, next to the launchers.
+
+## What changed in v1.6.2
+
+- **Downloads work with the tested library versions again.** The app was passing a progress option that huggingface_hub 0.36.2 (the version the launchers install) does not accept, so single-file downloads failed with "unexpected keyword argument 'tqdm_class'". Fixed.
+- **Rate limits are handled politely.** When Hugging Face answers "429 Too Many Requests", the app waits and retries (honoring its hint), spaces requests out, gives up waiting after about two minutes per run, and remembers search results for 20 minutes so a dry run and a real run do not ask twice.
+- **A partial search still downloads what it found**, within your limits, and says "search incomplete" in the activity log. Cleanup is skipped on those runs. If nothing was found because of a rate limit, the run tries again in about an hour instead of every minute.
+- **Clear download errors** with a one-line reason, and your saved Hugging Face token is now used for searches too (it raises the limit). See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## What changed in v1.6.1
 

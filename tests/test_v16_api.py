@@ -39,7 +39,7 @@ class V16ApiTests(unittest.TestCase):
         status, _, raw = helpers.http_request(self.port, "GET", "/")
         self.assertEqual(status, 200)
         html = raw.decode("utf-8")
-        self.assertIn("v1.6.1", html)
+        self.assertIn("v1.6.2", html)
         self.assertIn(self.token, html)
         self.assertIn("Scheduled auto-scan", html)
         self.assertIn("standing approval", html)
@@ -50,7 +50,7 @@ class V16ApiTests(unittest.TestCase):
     def test_info_includes_schedule_and_hides_token(self):
         status, data, _ = helpers.http_request(self.port, "GET", "/api/info")
         self.assertEqual(status, 200)
-        self.assertEqual(data.get("version"), "1.6.1")
+        self.assertEqual(data.get("version"), "1.6.2")
         self.assertIn("schedule", data)
         self.assertIn("settings", data["schedule"])
         self.assertFalse(data["schedule"]["settings"]["enabled"])

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.6.2 — scheduled downloads that actually finish
+
+A fix release for the scheduled auto-scan, prompted by a Mac tester whose dry run picked 3 models that the real run never downloaded.
+
+- **Downloads work again with the tested library versions.** Since v1.4 the launchers install huggingface_hub 0.36.2, and that version does not accept the progress option the app was passing when it downloads a single model file. Every single-file download (scheduled or by hand) stopped with "unexpected keyword argument 'tqdm_class'". The app now only passes options the installed library understands, and shows download progress by watching the file grow on disk when it has to.
+- **Rate limits are handled politely.** Hugging Face limits how many requests one internet address can make, and answers "429 Too Many Requests" when you go over. The app now spaces its requests out a little, waits and retries when Hugging Face says so (honoring its "try again in N seconds" hint), and gives up waiting after about two minutes per run instead of hammering the server. Search results are remembered for 20 minutes, so a dry run followed by a real run does not ask twice.
+- **A partial search still downloads what it found.** If some categories or model checks fail, the run keeps the models it did find and downloads them, still within your limits. The activity log and the page say "search incomplete" in plain language. Cleanup is skipped on those runs, because the app cannot tell what is out of date from an incomplete search.
+- **No results because of a rate limit? It tries again later.** The run is not counted as done, and the app tries again after about an hour (15 minutes if the internet was down) rather than every minute. The page shows when it will try again.
+- **Clear error messages.** Failed downloads are listed with a one-line reason (for example "Hugging Face refused access", "the disk is full", or "rate limited") plus the technical detail, instead of a block of error code. Dry runs report incomplete searches too.
+- **Your Hugging Face token now helps searches, not just gated downloads.** If you save a token, searches send it, which raises Hugging Face's request limit a lot. When the app is rate limited and no token is saved, it explains how to get a free one: make an account at huggingface.co, open Settings > Access Tokens, and create a token with the Read role. The token is stored the same way as before: on this computer only, in the system keychain if available, otherwise in a hidden file only your user can read.
+- **Smaller fixes.** A model whose scheduled download failed is offered again on the next run (before, it could be hidden forever because it was already on the approve list). A rate limit no longer switches off the "trending" sort for the rest of the session. One failed search inside a category no longer throws away the results of its other searches.
+- **One-time reinstall.** The launchers notice that the dependency list changed and reinstall the tested versions once on the next start. That also repairs any toolkit folder created by an older version.
+
 ## v1.6.1 — Mac scan-folder check
 
 A small fix on top of v1.6.

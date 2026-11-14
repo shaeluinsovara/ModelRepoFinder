@@ -46,7 +46,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 HF_TOKEN_FILE = ROOT / ".hf_token"
-VERSION = "1.6.1"
+VERSION = "1.6.2"
 SNAPSHOT_IGNORE_DEFAULT = [".git*"]
 USER_AGENT = f"model-repo-finder/{VERSION}"
 HF = HfApi(headers={"User-Agent": USER_AGENT})
