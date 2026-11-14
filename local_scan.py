@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Read-only scan for AI models already on this computer.
+"""Read-only scan for AI models and code projects already on this computer.
 
 Looks in well-known locations (the Hugging Face cache, Ollama, LM Studio, and
-this app's own save folders) plus any folders the person has added. The walk
+this app's own save folders) plus any folders the person has added. Since
+v1.7 it also finds GitHub projects: git clones (by reading the remote URL in
+.git/config, without running git) and zip downloads such as name-main. The walk
 is bounded by depth, file count, and a time limit, and never follows a path
 outside the folder it was asked to scan. Nothing is deleted or moved.
 """
@@ -10,7 +12,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -929,4 +933,403 @@ def source_label(source: str) -> str:
         "lmstudio": "LM Studio",
         "app": "Downloaded with this app",
         "custom": "Your folder",
+    }.get(source, source)
+
+
+# --- GitHub repositories already on this computer (v1.7) -----------------------
+# Read-only, like the model scan: it opens folder listings and a repo's
+# .git/config text file, and never runs git or changes anything.
+
+REPO_MAX_DEPTH = 3
+REPO_MAX_SECONDS = 8.0
+REPO_MAX_DIRS = 6000
+REPO_MAX_RESULTS = 2000
+REPO_SIZE_FILE_LIMIT = 3000
+REPO_HINT_FILES = {
+    "readme", "readme.md", "readme.rst", "readme.txt", "license", "license.md",
+    "license.txt", "copying", "setup.py", "pyproject.toml", "package.json",
+    "cargo.toml", "go.mod", "cmakelists.txt", "makefile", "requirements.txt",
+    "gemfile", "pom.xml", "build.gradle", ".gitignore", "composer.json",
+}
+ZIP_BRANCH_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.\-]+?)-(?P<branch>main|master|develop|dev|trunk)$", re.I)
+ZIP_FILE_RE = re.compile(r"^(?P<name>[A-Za-z0-9_.\-]+?)-(?P<branch>main|master|develop|dev|trunk)\.zip$", re.I)
+REPO_SKIP_DIRS = SKIP_DIR_NAMES | {
+    "AppData", "Library", "Applications", "Pictures", "Music", "Movies", "Videos",
+    "Photos", "site-packages", "dist-packages", "target", "build", "dist",
+    ".Trash", "Trash", "snap", "go", "miniconda3", "anaconda3", "Anaconda3",
+}
+_REMOTE_SECTION_RE = re.compile(r'^\s*\[\s*remote\s+"(?P<name>[^"]+)"\s*\]\s*$', re.I)
+_ANY_SECTION_RE = re.compile(r"^\s*\[")
+_URL_RE = re.compile(r"^\s*url\s*=\s*(?P<url>\S.*?)\s*$", re.I)
+
+
+def default_repo_roots() -> list[tuple[Path, int]]:
+    """Common places people keep downloaded or cloned projects, with depth."""
+    home = Path.home()
+    deep = [
+        home / "Documents" / "GitHub",          # GitHub Desktop's default
+        home / "OneDrive" / "Documents" / "GitHub",
+        home / "source" / "repos",              # Visual Studio's default
+        home / "src",
+        home / "code",
+        home / "Code",
+        home / "projects",
+        home / "Projects",
+        home / "dev",
+        home / "Developer",                     # common on Macs
+        home / "git",
+        home / "repos",
+        home / "GitHub",
+        home / "Documents",
+        home / "OneDrive" / "Documents",
+        home / "Downloads",
+        home / "Desktop",
+        home / "OneDrive" / "Desktop",
+    ]
+    out: list[tuple[Path, int]] = [(p, REPO_MAX_DEPTH) for p in deep]
+    out.append((home, 1))  # only folders sitting right in the home folder
+    return out
+
+
+def parse_git_remote_url(url: str) -> dict | None:
+    """Turn a remote URL into host / owner / repo. Never contacts the host."""
+    text = (url or "").strip()
+    if not text:
+        return None
+    host = path = ""
+    m = re.match(r"^(?:[a-z+]+://)(?:[^@/]+@)?(?P<host>[^/:]+)(?::\d+)?/(?P<path>.+)$", text, re.I)
+    if m:
+        host, path = m.group("host"), m.group("path")
+    else:
+        m = re.match(r"^(?:[^@/]+@)?(?P<host>[^/:]+):(?P<path>[^/].*)$", text)
+        if not m:
+            return None
+        host, path = m.group("host"), m.group("path")
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[-2], parts[-1]
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.\-]+", repo):
+        return None
+    host = host.lower()
+    return {
+        "host": host,
+        "owner": owner,
+        "repo": repo,
+        "id": f"{owner}/{repo}",
+        "is_github": host in {"github.com", "www.github.com", "ssh.github.com"},
+        "url": f"https://{host}/{owner}/{repo}" if host else "",
+    }
+
+
+def read_git_remotes(config_text: str) -> dict[str, str]:
+    remotes: dict[str, str] = {}
+    current = None
+    for line in (config_text or "").splitlines():
+        m = _REMOTE_SECTION_RE.match(line)
+        if m:
+            current = m.group("name")
+            continue
+        if _ANY_SECTION_RE.match(line):
+            current = None
+            continue
+        if current:
+            u = _URL_RE.match(line)
+            if u and current not in remotes:
+                remotes[current] = u.group("url").strip().strip('"')
+    return remotes
+
+
+def _git_dir_of(folder: Path) -> Path | None:
+    dot = folder / ".git"
+    try:
+        if dot.is_dir() and not dot.is_symlink():
+            return dot
+        if dot.is_file():
+            text = dot.read_text(encoding="utf-8", errors="replace")[:1000]
+            m = re.match(r"\s*gitdir:\s*(.+)", text)
+            if m:
+                target = Path(m.group(1).strip())
+                if not target.is_absolute():
+                    target = (folder / target)
+                commondir = target / "commondir"
+                if commondir.is_file():
+                    common = Path(commondir.read_text(encoding="utf-8", errors="replace").strip())
+                    target = common if common.is_absolute() else target / common
+                return target
+    except OSError:
+        return None
+    return None
+
+
+def _repo_from_git(folder: Path) -> dict | None:
+    git_dir = _git_dir_of(folder)
+    if git_dir is None:
+        return None
+    remotes: dict[str, str] = {}
+    branch = ""
+    try:
+        cfg_file = git_dir / "config"
+        if cfg_file.is_file() and cfg_file.stat().st_size < 256 * 1024:
+            remotes = read_git_remotes(cfg_file.read_text(encoding="utf-8", errors="replace"))
+        head = git_dir / "HEAD"
+        if head.is_file() and head.stat().st_size < 4096:
+            text = head.read_text(encoding="utf-8", errors="replace").strip()
+            if text.startswith("ref: refs/heads/"):
+                branch = text[len("ref: refs/heads/"):]
+    except OSError:
+        pass
+    url = remotes.get("origin") or next(iter(remotes.values()), "")
+    parsed = parse_git_remote_url(url) if url else None
+    return {
+        "source": "git",
+        "is_git": True,
+        "branch": branch,
+        "remote": parsed,
+    }
+
+
+def _looks_like_project(folder: Path, limit: int = 200) -> bool:
+    try:
+        with os.scandir(folder) as it:
+            for i, entry in enumerate(it):
+                if i >= limit:
+                    break
+                if entry.name.lower() in REPO_HINT_FILES:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _bounded_size(folder: Path, limit: int = REPO_SIZE_FILE_LIMIT) -> tuple[int, bool]:
+    """Size of a project folder, skipping .git and big tool folders. (bytes, complete)."""
+    total = 0
+    seen = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(folder, followlinks=False):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES and not d.startswith(".")]
+            for name in filenames:
+                seen += 1
+                if seen > limit:
+                    return total, False
+                try:
+                    st = os.lstat(os.path.join(dirpath, name))
+                except OSError:
+                    continue
+                if not os.path.islink(os.path.join(dirpath, name)):
+                    total += st.st_size
+    except OSError:
+        return total, False
+    return total, True
+
+
+def _mtime_iso(path: Path) -> str:
+    try:
+        ts = path.stat().st_mtime
+    except OSError:
+        return ""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _repo_row(path: Path, *, source: str, name: str, remote: dict | None, branch: str,
+              is_git: bool, size: int, size_complete: bool, root: Path) -> dict:
+    rid = remote["id"] if remote else ""
+    return {
+        "kind": "repo",
+        "source": source,
+        "id": rid,
+        "name": name,
+        "host": (remote or {}).get("host") or "",
+        "is_github": bool((remote or {}).get("is_github")),
+        "url": (remote or {}).get("url") or "",
+        "branch": branch,
+        "is_git": is_git,
+        "path": str(path),
+        "size": int(size),
+        "size_gb": int(size) / (1024 ** 3) if size else 0.0,
+        "size_complete": bool(size_complete),
+        "modified": _mtime_iso(path),
+        "scan_root": str(root),
+    }
+
+
+def scan_repo_tree(roots: Iterable[tuple[Path, int]], budget: ScanBudget, *, with_sizes: bool = True) -> list[dict]:
+    rows: list[dict] = []
+    seen_real: set[str] = set()
+    dirs_seen = 0
+    for root, depth_limit in roots:
+        try:
+            root = Path(root).expanduser()
+            if not root.is_dir() or _is_rejected_root(root):
+                continue
+            real_root = Path(os.path.realpath(root))
+        except (OSError, RuntimeError, ValueError):
+            continue
+        queue: list[tuple[Path, int]] = [(real_root, 0)]
+        while queue:
+            if budget.expired() or len(rows) >= REPO_MAX_RESULTS:
+                break
+            folder, depth = queue.pop(0)
+            dirs_seen += 1
+            if dirs_seen > REPO_MAX_DIRS:
+                budget._cut("folder count")
+                break
+            try:
+                with os.scandir(folder) as it:
+                    entries = []
+                    for i, entry in enumerate(it):
+                        if i >= budget.max_dir_entries:
+                            budget._cut("directory size")
+                            break
+                        entries.append(entry)
+            except OSError:
+                continue
+            for entry in entries:
+                name = entry.name
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                    is_file = entry.is_file(follow_symlinks=False)
+                except OSError:
+                    continue
+                path = Path(entry.path)
+                if is_file:
+                    m = ZIP_FILE_RE.match(name)
+                    if m and path.suffix.lower() == ".zip":
+                        key = os.path.normcase(str(path))
+                        if key in seen_real:
+                            continue
+                        seen_real.add(key)
+                        try:
+                            size = entry.stat(follow_symlinks=False).st_size
+                        except OSError:
+                            size = 0
+                        rows.append(_repo_row(path, source="zip_file", name=m.group("name"), remote=None,
+                                              branch=m.group("branch"), is_git=False, size=size,
+                                              size_complete=True, root=real_root))
+                    continue
+                if not is_dir or name in REPO_SKIP_DIRS or name.startswith(".") or name.startswith("$"):
+                    continue
+                key = os.path.normcase(os.path.realpath(path))
+                if key in seen_real:
+                    continue
+                if not contained(path, real_root):
+                    continue
+                git = _repo_from_git(path)
+                zipm = None if git else ZIP_BRANCH_RE.match(name)
+                if git or (zipm and _looks_like_project(path)):
+                    seen_real.add(key)
+                    remote = git.get("remote") if git else None
+                    label = (remote or {}).get("repo") or (zipm.group("name") if zipm else name)
+                    size, complete = _bounded_size(path) if with_sizes else (0, False)
+                    rows.append(_repo_row(
+                        path,
+                        source="git" if git else "zip_folder",
+                        name=label,
+                        remote=remote,
+                        branch=(git or {}).get("branch") or (zipm.group("branch") if zipm else ""),
+                        is_git=bool(git),
+                        size=size,
+                        size_complete=complete,
+                        root=real_root,
+                    ))
+                    continue  # never look inside a project for more projects
+                if depth + 1 < depth_limit:
+                    queue.append((path, depth + 1))
+    return rows
+
+
+def scan_local_repos(
+    cfg: dict | None = None,
+    *,
+    roots: Iterable[tuple[Path, int]] | None = None,
+    extra_folders: Iterable[str] | None = None,
+    include_defaults: bool = True,
+    max_seconds: float = REPO_MAX_SECONDS,
+    with_sizes: bool = True,
+) -> dict:
+    """Find code projects already on this computer. Read-only."""
+    cfg = cfg or {}
+    started = time.monotonic()
+    budget = ScanBudget(max_depth=REPO_MAX_DEPTH, max_seconds=max_seconds)
+    errors: list[str] = []
+    all_roots: list[tuple[Path, int]] = list(roots) if roots is not None else (
+        default_repo_roots() if include_defaults else []
+    )
+    raw_folders = list(extra_folders) if extra_folders is not None else list(cfg.get("scan_folders") or [])
+    for raw in raw_folders:
+        try:
+            all_roots.insert(0, (validate_scan_folder(str(raw)), REPO_MAX_DEPTH + 1))
+        except ValueError as exc:
+            errors.append(str(exc))
+    try:
+        rows = scan_repo_tree(all_roots, budget, with_sizes=with_sizes)
+    except Exception as exc:  # noqa: BLE001
+        rows = []
+        errors.append(f"project scan: {exc}")
+    rows.sort(key=lambda r: ((r.get("id") or r.get("name") or "").lower(), r.get("path") or ""))
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["source"]] = counts.get(row["source"], 0) + 1
+    return {
+        "items": rows,
+        "sources": counts,
+        "truncated": budget.truncated,
+        "truncate_reasons": list(budget.reasons),
+        "errors": errors,
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+    }
+
+
+def repo_identity_sets(result: dict | None) -> dict[str, set[str]]:
+    """Lookup sets for marking GitHub results: full ids, and bare names (zip downloads)."""
+    ids: set[str] = set()
+    names: set[str] = set()
+    by_id: dict[str, dict] = {}
+    by_name: dict[str, dict] = {}
+    for item in (result or {}).get("items") or []:
+        rid = (item.get("id") or "").lower()
+        if rid and item.get("is_github", True):
+            ids.add(rid)
+            by_id.setdefault(rid, item)
+        name = (item.get("name") or "").lower()
+        if name:
+            names.add(name)
+            by_name.setdefault(name, item)
+    return {"ids": ids, "names": names, "by_id": by_id, "by_name": by_name}
+
+
+def annotate_repos_local(rows: list[dict], ident: dict) -> list[dict]:
+    """Mark GitHub results that are already here (or probably are)."""
+    by_id = ident.get("by_id") or {}
+    by_name = ident.get("by_name") or {}
+    ids = ident.get("ids") or set()
+    for row in rows:
+        rid = (row.get("id") or "").lower()
+        if rid and rid in ids:
+            hit = by_id.get(rid) or {}
+            row["already_local"] = True
+            row["already_local_source"] = hit.get("source") or row.get("already_local_source") or "repo"
+            row["already_local_path"] = hit.get("path") or row.get("already_local_path") or ""
+            continue
+        if row.get("already_local"):
+            continue
+        name = rid.split("/", 1)[-1] if rid else ""
+        hit = by_name.get(name) if name else None
+        if hit and not hit.get("id"):
+            row["maybe_local"] = True
+            row["maybe_local_path"] = hit.get("path") or ""
+        row.setdefault("already_local", False)
+    return rows
+
+
+def repo_source_label(source: str) -> str:
+    return {
+        "git": "Cloned with git",
+        "zip_folder": "Unzipped download",
+        "zip_file": "Zip file (not unzipped)",
+        "app": "Downloaded with this app",
     }.get(source, source)
