@@ -23,6 +23,12 @@ DELETE_CONFIRM_PHRASE = "DELETE"
 INVENTORY_NAME = ".mrf_schedule.json"
 LOG_LIMIT = 50
 CHECK_INTERVAL_SECONDS = 60
+# Total time a run may spend waiting on Hugging Face retries (rate limits).
+RUN_WAIT_BUDGET_SECONDS = 120.0
+# When a run finds nothing because Hugging Face was rate limiting or the
+# internet was down, wait this long before trying again (not every minute).
+RATE_LIMIT_RETRY_MINUTES = 60
+OFFLINE_RETRY_MINUTES = 15
 
 FREQUENCIES = ("daily", "weekly", "every_n_days")
 POLICIES = ("keep_newest", "older_than", "superseded")
@@ -538,18 +544,8 @@ def is_due(
         return False
     now_dt = now_dt or now()
     state = state or {}
-    last_run = parse_iso(state.get("last_run"))
-    armed_at = parse_iso(state.get("enabled_at"))
-    # A re-enable starts a new waiting period; older last_runs do not
-    # trigger an immediate catch-up from before the schedule was turned on.
-    if armed_at and last_run and last_run < armed_at:
-        last_run = None
-    if last_run is None:
-        start = armed_at or now_dt
-        slot = first_slot_on_or_after(schedule, start, anchor=armed_at or start)
-        return slot <= now_dt
-    slot = first_slot_strictly_after(schedule, last_run, anchor=armed_at or last_run)
-    return slot <= now_dt
+    nxt = next_run_at(schedule, now_dt, state)
+    return nxt is not None and nxt <= now_dt
 
 
 def next_run_at(
@@ -569,8 +565,16 @@ def next_run_at(
         last_run = None
     if last_run is None:
         start = armed_at or now_dt
-        return first_slot_on_or_after(schedule, start, anchor=armed_at or start)
-    return first_slot_strictly_after(schedule, last_run, anchor=armed_at or last_run)
+        slot = first_slot_on_or_after(schedule, start, anchor=armed_at or start)
+    else:
+        slot = first_slot_strictly_after(schedule, last_run, anchor=armed_at or last_run)
+    # A run that could not finish (rate limited or offline) waits a while
+    # before the retry, so the app does not ask Hugging Face every minute.
+    retry_at = parse_iso(state.get("retry_not_before"))
+    if retry_at and slot < retry_at:
+        if armed_at is None or retry_at >= armed_at:
+            slot = retry_at
+    return slot
 
 
 _QUANT_PART = re.compile(
@@ -968,7 +972,39 @@ def gather_candidates(
     progress_cb: Callable[[str], None] | None = None,
     search_limit: int = 80,
 ) -> tuple[list[dict], list[str], bool]:
-    """Collect matching models. Returns (models, errors, offline).
+    """Collect matching models. Returns (models, errors, offline)."""
+    found = gather_candidates_ex(
+        cfg, machine, schedule, already_ids=already_ids, collect_fn=collect_fn,
+        top_picks_fn=top_picks_fn, progress_cb=progress_cb, search_limit=search_limit,
+    )
+    return found["models"], found["errors"], found["offline"]
+
+
+PARTIAL_SEARCH_EXPLAINED = (
+    "Part of the Hugging Face search did not finish (some categories or "
+    "model checks failed), so this run used the models it did find. Cleanup "
+    "was skipped, because the app cannot tell what is out of date from an "
+    "incomplete search."
+)
+
+
+def gather_candidates_ex(
+    cfg: dict,
+    machine: str,
+    schedule: dict,
+    *,
+    already_ids: set[str] | None = None,
+    collect_fn: CollectFn | None = None,
+    top_picks_fn: CollectFn | None = None,
+    progress_cb: Callable[[str], None] | None = None,
+    search_limit: int = 80,
+) -> dict:
+    """Collect matching models, and say whether the search was complete.
+
+    Returns a dict with: models, errors, warnings, offline, partial,
+    rate_limited. A search is "partial" when some categories, collectors, or
+    model checks failed but others worked; the models that were found are
+    still returned so the run can download them.
 
     `collect_fn` and `top_picks_fn` are injectable so tests never touch the
     network. When omitted, the real Hugging Face collectors are used.
@@ -984,22 +1020,51 @@ def gather_candidates(
         cats = list(machine_cfg.get("hf_categories") or W.all_hf_tags(cfg).keys())
     rows: list[dict] = []
     errors: list[str] = []
+    warnings: list[str] = []
     offline = False
+    rate_limited = False
+    partial = False
     keep = max(20, int(schedule["max_new_per_run"]) * 5)
     already = already_ids if schedule["skip_already_local"] else None
     cap_override = None if schedule["must_fit"] else max(cap, 10_000.0)
 
     def _call(fn, **kw):
-        nonlocal offline
+        nonlocal offline, rate_limited, partial
         try:
             return fn(**kw)
         except Exception as exc:  # noqa: BLE001
-            if is_offline_error(exc):
+            partial = True
+            if W.is_rate_limit_error(exc):
+                rate_limited = True
+                errors.append(W.RATE_LIMIT_MESSAGE)
+            elif is_offline_error(exc):
                 offline = True
-                errors.append(f"Could not reach Hugging Face ({exc}).")
+                errors.append(f"Could not reach Hugging Face ({W.friendly_error(exc)}).")
             else:
-                errors.append(str(exc))
+                errors.append(W.friendly_error(exc))
             return None
+
+    def _absorb(data: dict) -> None:
+        nonlocal rate_limited, partial
+        for tag in data.get("tags") or []:
+            if tag.get("error") or tag.get("partial"):
+                partial = True
+            if tag.get("warning"):
+                warnings.append(str(tag["warning"]))
+            if tag.get("rate_limited") or W.is_rate_limit_text(str(tag.get("error") or "")):
+                rate_limited = True
+        if data.get("overall_error"):
+            partial = True
+            errors.append(f"Top picks: {data['overall_error']}")
+            if W.is_rate_limit_text(str(data["overall_error"])):
+                rate_limited = True
+        for note in data.get("warnings") or []:
+            partial = True
+            warnings.append(f"Top picks: {note}")
+        if data.get("overall_partial"):
+            partial = True
+        if data.get("rate_limited"):
+            rate_limited = True
 
     if cats:
         fn = collect_fn or (
@@ -1008,6 +1073,7 @@ def gather_candidates(
                 categories=kw.get("categories"), sort=schedule["sort"],
                 already_ids=already or set(), record_seen=False,
                 keep_override=keep, cap_override=cap_override,
+                exclude_allowed=False,
             )
         )
         data = _call(fn, categories=cats, sort=schedule["sort"], already_ids=already, keep=keep)
@@ -1015,6 +1081,7 @@ def gather_candidates(
             part, errs = _flatten_collected(data)
             rows.extend(part)
             errors.extend(errs)
+            _absorb(data)
 
     if schedule["include_top_picks"]:
         fn = top_picks_fn or (
@@ -1029,11 +1096,23 @@ def gather_candidates(
             part, errs = _flatten_collected(data, default_tag="top_picks", source="top_picks")
             rows.extend(part)
             errors.extend(errs)
+            _absorb(data)
 
+    if any(W.is_rate_limit_text(e) for e in errors + warnings):
+        rate_limited = True
+    if errors:
+        partial = True
     kept, _skipped = filter_candidates(
         rows, schedule, already_ids=already_ids, cap=cap if schedule["must_fit"] else None
     )
-    return kept, errors, offline
+    return {
+        "models": kept,
+        "errors": errors,
+        "warnings": warnings,
+        "offline": offline,
+        "partial": partial,
+        "rate_limited": rate_limited,
+    }
 
 
 def _disk_of(tracked: list[dict]) -> float:
@@ -1045,12 +1124,30 @@ def _disk_of(tracked: list[dict]) -> float:
             continue
     return total
 
-def _preview_message(downloads, cleanup, action, offline, errors) -> str:
-    if offline:
+def _token_tip(rate_limited: bool) -> str:
+    if not rate_limited:
+        return ""
+    try:
+        has_token = bool(W.current_hf_token())
+    except Exception:  # noqa: BLE001
+        has_token = False
+    if has_token:
+        return " Hugging Face is still limiting requests even with your token; it usually clears up within an hour."
+    return " " + W.TOKEN_TIP
+
+
+def _preview_message(downloads, cleanup, action, offline, errors, *, partial=False, rate_limited=False) -> str:
+    if offline and not downloads:
         return (
             "Could not reach Hugging Face, so this preview has nothing new to "
             "download and cleanup would be skipped (the app never cleans up "
             "when a download or search fails)."
+        )
+    if rate_limited and not downloads:
+        return (
+            "Hugging Face is limiting how many requests this computer can make right "
+            "now, so the search found nothing to download. A real run would try again "
+            f"in about {RATE_LIMIT_RETRY_MINUTES} minutes." + _token_tip(True)
         )
     bits = [
         f"{len(downloads)} model" + ("s" if len(downloads) != 1 else "") + " would be downloaded"
@@ -1058,8 +1155,12 @@ def _preview_message(downloads, cleanup, action, offline, errors) -> str:
     verb = "permanently deleted" if action == "delete" else "moved to the retired folder"
     bits.append(f"{len(cleanup)} would be {verb}")
     msg = ", and ".join(bits) + "."
-    if errors:
-        msg += " Some searches reported a problem; cleanup would be skipped if this were a real run."
+    if partial or errors:
+        msg += (
+            " Part of the search did not finish, so a real run would download the "
+            "models listed here and skip cleanup."
+        )
+        msg += _token_tip(rate_limited)
     return msg
 
 
@@ -1082,14 +1183,17 @@ def build_preview(
     inventory = inventory if inventory is not None else load_inventory(current_path(root))
     tracked = tracked_for(inventory, machine)
     now_dt = now_dt or now()
-    candidates, errors, offline = gather_candidates(
-        cfg, machine, schedule, already_ids=already_ids,
-        collect_fn=collect_fn, top_picks_fn=top_picks_fn, progress_cb=progress_cb,
-    )
+    with W.hf_request_budget(RUN_WAIT_BUDGET_SECONDS):
+        found = gather_candidates_ex(
+            cfg, machine, schedule, already_ids=already_ids,
+            collect_fn=collect_fn, top_picks_fn=top_picks_fn, progress_cb=progress_cb,
+        )
+    candidates, errors, offline = found["models"], found["errors"], found["offline"]
+    partial, rate_limited = found["partial"], found["rate_limited"]
     would_download, skipped_limits = apply_limits(
         candidates, schedule, current_count=len(tracked), current_disk_gb=_disk_of(tracked),
     )
-    search_failed = bool(offline or errors)
+    search_failed = bool(offline or errors or partial)
     counts = incoming_category_counts(cfg, machine, root)
     would_cleanup = plan_cleanup(
         tracked, schedule, category_counts=counts,
@@ -1102,8 +1206,13 @@ def build_preview(
     return {
         "machine": machine,
         "dry_run": True,
-        "offline": offline,
+        "offline": offline and not would_download,
         "search_failed": search_failed,
+        "partial_search": bool(partial or errors),
+        "rate_limited": rate_limited,
+        "warnings": list(found["warnings"]),
+        "partial_note": PARTIAL_SEARCH_EXPLAINED if (partial or errors) else "",
+        "token_tip": _token_tip(rate_limited).strip(),
         "errors": errors,
         "would_download": would_download,
         "would_cleanup": would_cleanup,
@@ -1113,7 +1222,10 @@ def build_preview(
         "tracked_disk_gb": round(_disk_of(tracked), 3),
         "generated_at": _iso(now_dt),
         "schedule": schedule,
-        "message": _preview_message(would_download, would_cleanup, action, offline, errors),
+        "message": _preview_message(
+            would_download, would_cleanup, action, offline, errors,
+            partial=partial, rate_limited=rate_limited,
+        ),
     }
 
 
@@ -1356,36 +1468,73 @@ def execute_run(
         return result
 
     tracked = tracked_for(inventory, machine)
-    candidates, errors, offline = gather_candidates(
-        cfg, machine, schedule, already_ids=already_ids,
-        collect_fn=collect_fn, top_picks_fn=top_picks_fn, progress_cb=progress_cb,
-    )
+    with W.hf_request_budget(RUN_WAIT_BUDGET_SECONDS):
+        found = gather_candidates_ex(
+            cfg, machine, schedule, already_ids=already_ids,
+            collect_fn=collect_fn, top_picks_fn=top_picks_fn, progress_cb=progress_cb,
+        )
+    candidates, errors, offline = found["models"], found["errors"], found["offline"]
+    warnings = list(found["warnings"])
+    rate_limited = bool(found["rate_limited"])
+    partial = bool(found["partial"] or errors)
     to_download, skipped_limits = apply_limits(
         candidates, schedule, current_count=len(tracked), current_disk_gb=_disk_of(tracked),
     )
 
-    if offline:
-        # Do not record last_run, so a brief outage is retried on the next tick.
-        result = {
-            "machine": machine, "dry_run": False, "kind": kind, "status": "offline",
-            "message": (
+    if not candidates and (offline or rate_limited or (partial and errors)):
+        # Nothing usable came back because Hugging Face was unreachable or
+        # rate limiting. Do not record last_run (the run did not complete);
+        # retry later, after a pause so we do not ask again every minute.
+        wait_min = RATE_LIMIT_RETRY_MINUTES if rate_limited else OFFLINE_RETRY_MINUTES
+        retry_at = now_dt + timedelta(minutes=wait_min)
+        status = "rate_limited" if rate_limited else ("offline" if offline else "incomplete")
+        if status == "incomplete":
+            wait_min = RATE_LIMIT_RETRY_MINUTES
+            retry_at = now_dt + timedelta(minutes=wait_min)
+            message = (
+                "The Hugging Face search did not finish ("
+                + (errors[0] if errors else "unknown problem")
+                + "), so nothing was downloaded or cleaned up. The app will try "
+                f"again after {_clock(retry_at)}."
+            )
+        elif rate_limited:
+            message = (
+                "Hugging Face is limiting how many requests this computer can make "
+                "right now, so the search found nothing to download. Nothing was "
+                f"downloaded or cleaned up. The app will try again after {_clock(retry_at)}."
+                + _token_tip(True)
+            )
+        else:
+            message = (
                 "Could not reach Hugging Face. Nothing was downloaded or cleaned up; "
-                "the run will be tried again later."
-            ),
+                f"the run will be tried again after {_clock(retry_at)}."
+            )
+        result = {
+            "machine": machine, "dry_run": False, "kind": kind, "status": status,
+            "message": message,
             "downloaded": [], "cleaned": [], "failed": [], "errors": errors,
-            "offline": True, "cleanup_skipped": True, "skipped": skipped_limits,
+            "warnings": warnings, "partial_search": True, "rate_limited": rate_limited,
+            "offline": offline, "cleanup_skipped": True,
+            "cleanup_skipped_reason": "the search did not finish",
+            "skipped": skipped_limits, "retry_not_before": _iso(retry_at),
             "generated_at": _iso(now_dt), "schedule": schedule,
         }
+        set_machine_state(
+            inventory, machine, retry_not_before=_iso(retry_at),
+            last_attempt=_iso(now_dt), last_attempt_status=status, last_message=message,
+        )
         append_log(inventory, {
             "at": _iso(now_dt), "machine": machine, "kind": kind,
-            "status": "offline", "message": result["message"], "errors": errors,
-            "offline": True, "downloaded": [], "retired": [], "deleted": [],
+            "status": status, "message": message, "errors": errors,
+            "warnings": warnings, "partial_search": True, "rate_limited": rate_limited,
+            "offline": offline, "downloaded": [], "retired": [], "deleted": [],
         })
         save_inventory(inventory, current_path(root))
         return result
 
     downloaded: list[dict] = []
     failed: list[dict] = []
+    download_errors: list[str] = []
     for item in to_download:
         repo_id = str(item.get("id") or "")
         tag = str(item.get("tag") or "misc")
@@ -1405,17 +1554,34 @@ def execute_run(
                 path=path, dest=dest, item=item, source="auto", now_dt=now_dt,
             )
             downloaded.append(row)
+            if progress_cb:
+                progress_cb(f"Saved {repo_id}.")
         except Exception as exc:  # noqa: BLE001
-            failed.append({**item, "error": str(exc), "offline": is_offline_error(exc)})
-            errors.append(f"{repo_id}: {exc}")
+            plain = W.friendly_error(exc)
+            detail = str(exc).strip().splitlines()[0][:300] if str(exc).strip() else type(exc).__name__
+            failed.append({
+                **item, "error": plain, "error_detail": detail,
+                "offline": is_offline_error(exc), "rate_limited": W.is_rate_limit_error(exc),
+            })
+            download_errors.append(f"Download of {repo_id} failed: {plain}")
+            if progress_cb:
+                progress_cb(f"Download of {repo_id} failed: {plain}")
+            if W.is_rate_limit_error(exc):
+                rate_limited = True
+    errors.extend(download_errors)
 
     downloads_failed = bool(failed)
     cleaned: list[dict] = []
-    cleanup_skipped = downloads_failed
+    cleanup_skipped = downloads_failed or partial
+    cleanup_reason = ""
+    if downloads_failed:
+        cleanup_reason = "a download did not finish"
+    elif partial:
+        cleanup_reason = "the search was incomplete, so the app cannot tell what is out of date"
     action = "retire"
     if schedule["cleanup_action"] == "delete" and schedule.get("delete_confirmed"):
         action = "delete"
-    if not downloads_failed and schedule["cleanup_enabled"]:
+    if not cleanup_skipped and schedule["cleanup_enabled"]:
         if progress_cb:
             progress_cb("Cleaning up out-of-date auto-managed models…")
         counts = incoming_category_counts(cfg, machine, root)
@@ -1439,11 +1605,11 @@ def execute_run(
                     relative_path=str(item.get("relative_path") or item.get("name") or ""),
                 )
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"Cleanup of {item.get('id') or item.get('name')}: {exc}")
+                errors.append(f"Cleanup of {item.get('id') or item.get('name')}: {W.friendly_error(exc)}")
 
     if failed and not downloaded:
         status = "error"
-    elif failed:
+    elif failed or partial:
         status = "partial"
     else:
         status = "ok"
@@ -1452,27 +1618,46 @@ def execute_run(
     message_parts = [
         f"Downloaded {len(downloaded)} model" + ("s" if len(downloaded) != 1 else "") + ".",
     ]
+    if failed:
+        message_parts.append(
+            f"{len(failed)} download(s) failed: " + "; ".join(
+                f"{f.get('id')}: {f.get('error')}" for f in failed[:3]
+            ) + "."
+        )
+    if partial:
+        message_parts.append(
+            "Part of the Hugging Face search did not finish, so this run used the "
+            "models it did find."
+        )
     if cleanup_skipped:
-        message_parts.append("Cleanup was skipped because a download did not finish.")
-    else:
+        if schedule["cleanup_enabled"]:
+            message_parts.append(f"Cleanup was skipped because {cleanup_reason}.")
+    elif schedule["cleanup_enabled"]:
         n = len(cleaned)
         message_parts.append(
             f"{n} auto-managed model" + ("s were " if n != 1 else " was ") + verb_clean + "."
         )
-    if failed:
-        message_parts.append(f"{len(failed)} download(s) failed.")
+    tip = _token_tip(rate_limited)
+    if tip:
+        message_parts.append(tip.strip())
 
     result = {
         "machine": machine, "dry_run": False, "kind": kind, "status": status,
         "message": " ".join(message_parts),
         "downloaded": downloaded, "cleaned": cleaned, "failed": failed,
-        "errors": errors, "offline": False, "cleanup_skipped": cleanup_skipped,
+        "errors": errors, "warnings": warnings, "offline": False,
+        "partial_search": partial, "rate_limited": rate_limited,
+        "partial_note": PARTIAL_SEARCH_EXPLAINED if partial else "",
+        "cleanup_skipped": cleanup_skipped, "cleanup_skipped_reason": cleanup_reason,
         "cleanup_action": action, "skipped": skipped_limits,
         "generated_at": _iso(now_dt), "schedule": schedule,
     }
+    # The run completed (even if partial): record it so the schedule moves on.
+    # Models that failed to download stay eligible for the next run.
     set_machine_state(
         inventory, machine,
         last_run=_iso(now_dt), last_run_status=status, last_message=result["message"],
+        retry_not_before=None, last_attempt=_iso(now_dt), last_attempt_status=status,
     )
     retired = [c for c in cleaned if c.get("action") != "delete"]
     deleted = [c for c in cleaned if c.get("action") == "delete"]
@@ -1482,11 +1667,26 @@ def execute_run(
         "downloaded": [{"id": d.get("id"), "tag": d.get("tag"), "name": d.get("name")} for d in downloaded],
         "retired": [{"id": c.get("id"), "tag": c.get("tag"), "name": c.get("name")} for c in retired],
         "deleted": [{"id": c.get("id"), "tag": c.get("tag"), "name": c.get("name")} for c in deleted],
-        "errors": errors, "offline": False,
+        "failed": [
+            {"id": f.get("id"), "tag": f.get("tag"), "error": f.get("error"), "detail": f.get("error_detail")}
+            for f in failed
+        ],
+        "errors": errors, "warnings": warnings, "offline": False,
+        "partial_search": partial, "rate_limited": rate_limited,
+        "cleanup_skipped_reason": cleanup_reason,
     })
     save_inventory(inventory, current_path(root))
     result["inventory"] = inventory
     return result
+
+
+def _clock(dt: datetime) -> str:
+    """A short local time such as 4:05 PM for messages."""
+    try:
+        text = dt.strftime("%I:%M %p").lstrip("0")
+    except ValueError:
+        text = _iso(dt) or ""
+    return text
 
 
 def public_state(
@@ -1513,6 +1713,9 @@ def public_state(
         "last_run": state.get("last_run"),
         "last_run_status": state.get("last_run_status"),
         "last_message": state.get("last_message"),
+        "last_attempt": state.get("last_attempt"),
+        "last_attempt_status": state.get("last_attempt_status"),
+        "retry_not_before": state.get("retry_not_before"),
         "enabled_at": state.get("enabled_at"),
         "next_run": _iso(nxt) if nxt else None,
         "due": is_due(schedule, now_dt, state),
