@@ -1738,6 +1738,100 @@ def download_with_retries(fn, *, progress: dict | None = None, attempts: int = 4
     raise last
 
 
+def _accepts_kwarg(fn: Callable, name: str) -> bool:
+    """True if `fn` takes keyword `name` (or **kwargs)."""
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _supported_kwargs(fn: Callable, kwargs: dict) -> dict:
+    """Drop keyword arguments the installed huggingface_hub does not accept.
+
+    huggingface_hub 0.x `hf_hub_download` has no `tqdm_class` argument (only
+    `snapshot_download` does); passing it there made every single-file
+    download fail with "unexpected keyword argument 'tqdm_class'".
+    """
+    return {k: v for k, v in kwargs.items() if _accepts_kwarg(fn, k)}
+
+
+class _DiskProgress:
+    """Report download progress by watching bytes appear on disk.
+
+    Used when the installed huggingface_hub cannot take our progress class.
+    It sums file sizes under the destination (including the .incomplete
+    files huggingface_hub writes while downloading).
+    """
+
+    def __init__(self, sink: dict | None, folder: Path, interval: float = 0.5):
+        self.sink = sink
+        self.folder = Path(folder)
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._start_bytes = self._measure()
+
+    def _measure(self) -> int:
+        total = 0
+        try:
+            for p in self.folder.rglob("*"):
+                try:
+                    if p.is_file():
+                        total += p.stat().st_size
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        return total
+
+    def _publish(self) -> None:
+        if not self.sink:
+            return
+        done = max(0, self._measure() - self._start_bytes)
+        with DownloadProgress._lock:
+            self.sink["downloaded_bytes"] = done
+            total = int(self.sink.get("total_bytes") or 0)
+            self.sink["percent"] = round(min(99.0, 100.0 * done / total), 1) if total else None
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval):
+            self._publish()
+
+    def __enter__(self):
+        if self.sink is not None:
+            self._thread = threading.Thread(target=self._run, name="mrf-disk-progress", daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+        return False
+
+
+def _hub_download_call(fn: Callable, folder: Path, progress: dict | None, **kwargs):
+    """Call hf_hub_download / snapshot_download with only supported arguments."""
+    if tqdm is not None:
+        kwargs["tqdm_class"] = DownloadProgress
+    call_kwargs = _supported_kwargs(fn, kwargs)
+    use_tqdm = "tqdm_class" in call_kwargs
+    if use_tqdm:
+        DownloadProgress.sink = progress
+        try:
+            return fn(**call_kwargs)
+        finally:
+            DownloadProgress.sink = None
+    with _DiskProgress(progress, folder):
+        return fn(**call_kwargs)
+
+
 def download_gguf(
     repo_id: str,
     filename: str,
@@ -1748,18 +1842,16 @@ def download_gguf(
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     def _do() -> Path:
-        DownloadProgress.sink = progress
-        try:
-            path = hf_hub_download(
-                repo_id=repo_id,
-                filename=filename,
-                local_dir=str(dest_dir),
-                tqdm_class=DownloadProgress if tqdm is not None else None,
-                user_agent=USER_AGENT,
-                token=token or None,
-            )
-        finally:
-            DownloadProgress.sink = None
+        path = _hub_download_call(
+            hf_hub_download,
+            dest_dir,
+            progress,
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=str(dest_dir),
+            user_agent=USER_AGENT,
+            token=token or None,
+        )
         return Path(path)
 
     return download_with_retries(_do, progress=progress)
@@ -1783,18 +1875,16 @@ def download_repo(
     patterns = list(ignore_patterns) if ignore_patterns is not None else list(SNAPSHOT_IGNORE_DEFAULT)
 
     def _do() -> Path:
-        DownloadProgress.sink = progress
-        try:
-            path = snapshot_download(
-                repo_id=repo_id,
-                local_dir=str(target),
-                tqdm_class=DownloadProgress if tqdm is not None else None,
-                user_agent=USER_AGENT,
-                token=token or None,
-                ignore_patterns=patterns,
-            )
-        finally:
-            DownloadProgress.sink = None
+        path = _hub_download_call(
+            snapshot_download,
+            target,
+            progress,
+            repo_id=repo_id,
+            local_dir=str(target),
+            user_agent=USER_AGENT,
+            token=token or None,
+            ignore_patterns=patterns,
+        )
         return Path(path)
 
     return download_with_retries(_do, progress=progress)
